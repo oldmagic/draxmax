@@ -1,0 +1,54 @@
+diff --git a/mse.js b/mse.js
+index 5e1ad842ea7e4f46fb82e2a3e309971729dc0aa6..1df7c9ec1aa38a000ad95bbfa376fca832099e4d 100644
+--- a/mse.js
++++ b/mse.js
+@@ -53,6 +53,38 @@ function createRC4Cipher (key) {
+ const DH_PRIME = 'ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a63a36210000000000090563'
+ const DH_GENERATOR = 2
+ 
++// crypto.createDiffieHellman() re-validates the prime on every call (~35 ms of blocking CPU
++// per connection), which starved downloads with many peers. Same math via BigInt, with the
++// 160-bit private key MSE specifies; keys and secrets are 96-byte big-endian.
++const DH_P = BigInt('0x' + DH_PRIME)
++const DH_G = BigInt(DH_GENERATOR)
++const toBigInt = (u8) => BigInt('0x' + (arr2hex(u8) || '0'))
++const toBytes96 = (n) => Buffer.from(n.toString(16).padStart(192, '0'), 'hex')
++function modPow (base, exp, mod) {
++  let result = 1n
++  base %= mod
++  while (exp > 0n) {
++    if (exp & 1n) result = result * base % mod
++    exp >>= 1n
++    base = base * base % mod
++  }
++  return result
++}
++class MseDiffieHellman {
++  generateKeys () {
++    if (!this._publicKey) {
++      this._privateKey = toBigInt(randomBytes(20)) | 1n
++      this._publicKey = toBytes96(modPow(DH_G, this._privateKey, DH_P))
++    }
++    return this._publicKey
++  }
++
++  computeSecret (otherPublicKey) {
++    this.generateKeys()
++    return toBytes96(modPow(toBigInt(otherPublicKey), this._privateKey, DH_P))
++  }
++}
++
+ const REQ1_STR = text2arr('req1')
+ const REQ2_STR = text2arr('req2')
+ const REQ3_STR = text2arr('req3')
+@@ -127,9 +159,7 @@ export class MessageStreamEncryptor {
+   }
+ 
+   get dh () {
+-    if (!this._dh) {
+-      this._dh = crypto.createDiffieHellman(DH_PRIME, 'hex', DH_GENERATOR)
+-    }
++    if (!this._dh) this._dh = new MseDiffieHellman()
+     return this._dh
+   }
+ 

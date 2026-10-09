@@ -1,0 +1,21 @@
+# Hot-reload development: `docker compose -f docker-compose.dev.yml up`
+# Web UI with HMR on http://localhost:5173 (API on :8895).
+services:
+  draxmax-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    network_mode: host
+    environment:
+      - CONFIG_PATH=/src/data/dev/config
+      - DOWNLOAD_PATH=/src/data/dev/downloads
+      - WATCH_PATH=/src/data/dev/watch
+      - TORRENT_PORT=0
+    volumes:
+      - .:/src
+      # Keep container-built node_modules (native modules) separate from the host's.
+      - dev-node-modules:/src/node_modules
+      - dev-pnpm-store:/pnpm/store
+volumes:
+  dev-node-modules:
+  dev-pnpm-store:

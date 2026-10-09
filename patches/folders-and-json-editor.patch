@@ -1,0 +1,936 @@
+From aa961bc763c6bbd7ab1b66eb4aa9225e2b267d4d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 19:46:03 +0000
+Subject: [PATCH] Fix new-folder closing the picker; folder picker for library
+ folders; RSS JSON editor
+
+- Folder chooser: creating a folder (or pressing Enter in it) no longer
+  submits the form it was opened from. The dialog is portalled, but React
+  bubbles submit/keydown through the component tree, so the rule editor
+  saved and re-mounted (and the chooser vanished) mid-browse.
+- Settings > Library folders: "Add folder" opens the folder chooser and
+  appends the pick; the list stays editable, one folder per line.
+- RSS > Edit as JSON: all feeds and rules as one document (rules reference
+  feeds by URL, optional id allows renames). GET/PUT /api/rss/config;
+  validated up front and written in one transaction, never re-matches
+  existing articles, optional delete-missing with a count and confirm.
+  Errors show line/column and jump to the spot; Tab indents, Ctrl/Cmd+S
+  saves, Format, Download and Undo changes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013nmSf2zmYoNEfzcNutPGUX
+---
+ README.md                                 |   1 +
+ apps/server/src/routes/rss.ts             |   7 +
+ apps/web/src/components/FolderPicker.tsx  |  27 ++-
+ apps/web/src/components/RssJsonEditor.tsx | 266 ++++++++++++++++++++++
+ apps/web/src/lib/api.ts                   |   5 +
+ apps/web/src/lib/json-error.ts            |  73 ++++++
+ apps/web/src/pages/Rss.tsx                |   2 +
+ apps/web/src/pages/Settings.tsx           |  30 ++-
+ packages/core/src/rss/rss-repo.ts         |  13 ++
+ packages/core/src/rss/rss-service.test.ts |  59 +++++
+ packages/core/src/rss/rss-service.ts      | 154 +++++++++++++
+ packages/shared/src/api.ts                |  36 +++
+ 12 files changed, 666 insertions(+), 7 deletions(-)
+ create mode 100644 apps/web/src/components/RssJsonEditor.tsx
+ create mode 100644 apps/web/src/lib/json-error.ts
+
+diff --git a/README.md b/README.md
+index 8a33feb..c8380cc 100644
+--- a/README.md
++++ b/README.md
+@@ -116,6 +116,7 @@ Everything is configurable in **Settings**. Every value can also be set by an en
+   - The smart filter never downloads the same episode twice. A REPACK/PROPER is allowed once.
+   - Saving a rule also applies it to articles already in your feeds.
+   - **Feeds for many rules at once:** tick rules (Shift-click for a range, or search and tick the box at the top for all shown). The right-hand panel then lists every feed as on, off or mixed for the selection: click to add a feed to all of them or remove it, then *Save feeds*. Disabled rules can be turned on in the same step.
++  - **Edit as JSON** (top of the RSS page) shows all feeds and rules as one document: rules list their feeds by URL, and keeping a rule's `id` lets you rename it. Errors point to the line, saving is all-or-nothing and never downloads a backlog, and *Delete feeds and rules that aren't in the JSON* is off unless you tick it.
+   - Each rule can save to its own folder (*Save to*), e.g. `/downloads/Anime/<Show>/S01`. The checkbox in the rule list turns a rule on or off.
+   - **Coming from qBittorrent?** Export your rules there (RSS → Download Rules… → right-click the list → *Export rules…*). Then use the import button above the rule list. Feeds are matched by URL, and missing ones can be added for you. Rules that end up without a subscribed feed are imported disabled. By default only future articles are downloaded. qBittorrent's per-rule list of already-matched episodes isn't imported.
+ - **Missing episodes:** RSS only sees the latest items in a feed, so episodes released while DraxMax was off, or before you added a rule, never arrive that way. Every enabled rule with a *Save to* folder is checked regularly, every 6 h for shows active in the last 30 days and weekly for the rest:
+diff --git a/apps/server/src/routes/rss.ts b/apps/server/src/routes/rss.ts
+index 90c274c..2388144 100644
+--- a/apps/server/src/routes/rss.ts
++++ b/apps/server/src/routes/rss.ts
+@@ -7,6 +7,7 @@ import {
+   feedPatchSchema,
+   markReadSchema,
+   qbRuleImportSchema,
++  rssConfigSaveSchema,
+   ruleFeedsSchema,
+   ruleIdsSchema,
+   ruleSchema,
+@@ -85,6 +86,12 @@ export async function rssRoutes(app: FastifyInstance, { core }: { core: Core }):
+   app.post('/api/rss/rules/delete', async (req) => ({
+     deleted: rss.deleteRules(ruleIdsSchema.parse(req.body).ids),
+   }));
++  // Feeds and rules as one JSON document (Edit as JSON).
++  app.get('/api/rss/config', async () => rss.exportConfig());
++  app.put('/api/rss/config', async (req) => {
++    const { removeMissing, ...cfg } = rssConfigSaveSchema.parse(req.body);
++    return rss.importConfig(cfg, removeMissing);
++  });
+   app.post('/api/rss/rules/feeds', async (req) =>
+     rss.setRuleFeeds(ruleFeedsSchema.parse(req.body)),
+   );
+diff --git a/apps/web/src/components/FolderPicker.tsx b/apps/web/src/components/FolderPicker.tsx
+index e795d9a..c416f00 100644
+--- a/apps/web/src/components/FolderPicker.tsx
++++ b/apps/web/src/components/FolderPicker.tsx
+@@ -8,7 +8,7 @@ import {
+   HardDrive,
+   Loader2,
+ } from 'lucide-react';
+-import { useEffect, useId, useMemo, useRef, useState } from 'react';
++import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+ import { toast } from 'sonner';
+ import { isAbsolutePath } from '@draxmax/shared';
+ import { Button } from '@/components/ui/button';
+@@ -106,17 +106,20 @@ export function BrowseButton({
+   value,
+   onPick,
+   className,
++  children,
+ }: {
+   value: string | undefined;
+   onPick(path: string): void;
+   className?: string;
++  /** Button content; defaults to a folder icon and "Browse". */
++  children?: ReactNode;
+ }) {
+   const [open, setOpen] = useState(false);
+   return (
+     <>
+       <Button
+         size="sm"
+-        aria-label="Browse for folder"
++        aria-label={children ? undefined : 'Browse for folder'}
+         className={cn('h-10 shrink-0', className)}
+         onClick={() => {
+           if (desktop?.pickFolder)
+@@ -124,7 +127,11 @@ export function BrowseButton({
+           else setOpen(true);
+         }}
+       >
+-        <FolderOpen /> Browse
++        {children ?? (
++          <>
++            <FolderOpen /> Browse
++          </>
++        )}
+       </Button>
+       {!desktop?.pickFolder && (
+         <FolderBrowserDialog
+@@ -159,8 +166,18 @@ export function FolderBrowserDialog({
+         description="Folders on the DraxMax server. Network shares must be mounted there."
+         className="w-[min(94vw,36rem)]"
+       >
+-        {/* Mounted only while open, so it starts from the current value each time. */}
+-        <FolderBrowser initialPath={initialPath} onCancel={onClose} onPick={onPick} />
++        {/*
++          The dialog renders in a portal, but React still bubbles events through the component
++          tree: without this, submitting "New folder" (or the path field) also submits the form
++          this picker was opened from (Add torrent, rule editor), which closes it.
++          Mounted only while open, so it starts from the current value each time.
++        */}
++        <div
++          onSubmit={(e) => e.stopPropagation()}
++          onKeyDown={(e) => e.key === 'Enter' && e.stopPropagation()}
++        >
++          <FolderBrowser initialPath={initialPath} onCancel={onClose} onPick={onPick} />
++        </div>
+       </DialogContent>
+     </Dialog>
+   );
+diff --git a/apps/web/src/components/RssJsonEditor.tsx b/apps/web/src/components/RssJsonEditor.tsx
+new file mode 100644
+index 0000000..38c9307
+--- /dev/null
++++ b/apps/web/src/components/RssJsonEditor.tsx
+@@ -0,0 +1,266 @@
++import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
++import { AlertTriangle, Braces, Download, Loader2, RotateCcw, WandSparkles } from 'lucide-react';
++import { useMemo, useRef, useState } from 'react';
++import { toast } from 'sonner';
++import type { RssConfig } from '@draxmax/shared';
++import { Button } from '@/components/ui/button';
++import { Dialog, DialogContent } from '@/components/ui/dialog';
++import { api } from '@/lib/api';
++import { locateJsonError } from '@/lib/json-error';
++import { cn } from '@/lib/utils';
++
++const pretty = (v: unknown) => JSON.stringify(v, null, 2);
++
++/** Checks the text and returns the document, or a readable error with its line. */
++function parse(text: string): { cfg: RssConfig } | { error: string; index?: number } {
++  let value: unknown;
++  try {
++    value = JSON.parse(text);
++  } catch {
++    const at = locateJsonError(text);
++    return { error: at.message, index: at.index };
++  }
++  if (
++    !value ||
++    typeof value !== 'object' ||
++    !Array.isArray((value as RssConfig).feeds) ||
++    !Array.isArray((value as RssConfig).rules)
++  )
++    return { error: 'Expected an object with "feeds" and "rules" arrays' };
++  return { cfg: value as RssConfig };
++}
++
++/** "Edit as JSON": all feeds and download rules as one document, edited and saved at once. */
++export function RssJsonEditorButton() {
++  const [open, setOpen] = useState(false);
++  // Escape / clicking outside shouldn't silently throw away edits.
++  const dirty = useRef(false);
++  return (
++    <>
++      <Button size="sm" onClick={() => setOpen(true)}>
++        <Braces /> Edit as JSON
++      </Button>
++      <Dialog
++        open={open}
++        onOpenChange={(o) => {
++          if (!o && dirty.current && !confirm('Discard your changes?')) return;
++          dirty.current = false;
++          setOpen(o);
++        }}
++      >
++        <DialogContent
++          title="Feeds & download rules (JSON)"
++          description="Rules name their feeds by URL. Keep a rule's id to rename it; leave it out for a new rule."
++          className="w-[min(96vw,64rem)]"
++        >
++          {open && (
++            <Editor
++              onDirty={(d) => (dirty.current = d)}
++              onClose={() => {
++                dirty.current = false;
++                setOpen(false);
++              }}
++            />
++          )}
++        </DialogContent>
++      </Dialog>
++    </>
++  );
++}
++
++function Editor({ onClose, onDirty }: { onClose(): void; onDirty(dirty: boolean): void }) {
++  const qc = useQueryClient();
++  const area = useRef<HTMLTextAreaElement>(null);
++  const loaded = useQuery({
++    queryKey: ['rss', 'config'],
++    queryFn: api.rssConfig,
++    staleTime: Infinity,
++    gcTime: 0,
++  });
++  const [text, setText] = useState<string | null>(null);
++  const [removeMissing, setRemoveMissing] = useState(false);
++  const original = loaded.data ? pretty(loaded.data) : '';
++  const value = text ?? original;
++  const dirty = text !== null && text !== original;
++  onDirty(dirty);
++  const parsed = useMemo(() => (value ? parse(value) : null), [value]);
++
++  // What "delete missing" would remove, so it's never a surprise.
++  const removals = useMemo(() => {
++    if (!loaded.data || !parsed || 'error' in parsed) return { feeds: 0, rules: 0 };
++    const urls = new Set(parsed.cfg.feeds.map((f) => f.url));
++    const ids = new Set(parsed.cfg.rules.flatMap((r) => (r.id ? [r.id] : [])));
++    const names = new Set(parsed.cfg.rules.map((r) => r.name));
++    return {
++      feeds: loaded.data.feeds.filter((f) => !urls.has(f.url)).length,
++      rules: loaded.data.rules.filter((r) => !ids.has(r.id!) && !names.has(r.name)).length,
++    };
++  }, [loaded.data, parsed]);
++
++  const save = useMutation({
++    mutationFn: (cfg: RssConfig) => api.saveRssConfig({ ...cfg, removeMissing }),
++    onSuccess: (res) => {
++      const part = (n: { created: number; updated: number; deleted: number }, what: string) => {
++        const bits = [
++          n.created && `${n.created} added`,
++          n.updated && `${n.updated} updated`,
++          n.deleted && `${n.deleted} deleted`,
++        ].filter(Boolean);
++        return bits.length ? `${what} ${bits.join(', ')}` : '';
++      };
++      const summary = [part(res.feeds, 'Feeds:'), part(res.rules, 'Rules:')].filter(Boolean);
++      toast.success(summary.length ? `Saved: ${summary.join(' · ')}` : 'Nothing changed');
++      void qc.invalidateQueries({ queryKey: ['rss'] });
++      onClose();
++    },
++    onError: (e) => toast.error(e.message, { duration: 10_000 }),
++  });
++
++  function submit() {
++    if (!parsed || 'error' in parsed) return;
++    if (
++      removeMissing &&
++      (removals.feeds || removals.rules) &&
++      !confirm(
++        `Delete ${removals.feeds} feeds and ${removals.rules} rules that aren't in the JSON?`,
++      )
++    )
++      return;
++    save.mutate(parsed.cfg);
++  }
++
++  function download() {
++    const url = URL.createObjectURL(new Blob([value], { type: 'application/json' }));
++    const a = Object.assign(document.createElement('a'), {
++      href: url,
++      download: `draxmax-rss-${new Date().toISOString().slice(0, 10)}.json`,
++    });
++    a.click();
++    URL.revokeObjectURL(url);
++  }
++
++  if (loaded.isLoading)
++    return (
++      <div className="grid h-64 place-items-center">
++        <Loader2 className="size-5 animate-spin text-muted" aria-label="Loading" />
++      </div>
++    );
++  if (loaded.isError) return <p className="text-sm text-danger">{loaded.error.message}</p>;
++
++  const error = parsed && 'error' in parsed ? parsed.error : null;
++  const counts = parsed && !('error' in parsed) ? parsed.cfg : null;
++
++  return (
++    <form
++      className="space-y-3"
++      onSubmit={(e) => {
++        e.preventDefault();
++        submit();
++      }}
++    >
++      <textarea
++        ref={area}
++        aria-label="Feeds and rules JSON"
++        value={value}
++        spellCheck={false}
++        autoComplete="off"
++        onChange={(e) => setText(e.target.value)}
++        onKeyDown={(e) => {
++          // Tab indents instead of leaving the editor; Ctrl/⌘+S saves.
++          if (e.key === 'Tab' && !e.shiftKey) {
++            e.preventDefault();
++            const el = e.currentTarget;
++            const { selectionStart: a, selectionEnd: b } = el;
++            const next = `${value.slice(0, a)}  ${value.slice(b)}`;
++            setText(next);
++            requestAnimationFrame(() => el.setSelectionRange(a + 2, a + 2));
++          } else if (e.key === 's' && (e.ctrlKey || e.metaKey)) {
++            e.preventDefault();
++            submit();
++          }
++        }}
++        className={cn(
++          'h-[58vh] w-full resize-none rounded-xl border bg-surface-2 p-3 font-mono text-xs leading-5 text-fg outline-none [tab-size:2] focus:ring-2 focus:ring-accent/40',
++          error && 'border-danger/60',
++        )}
++      />
++
++      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
++        {error ? (
++          <button
++            type="button"
++            title="Go to the error"
++            className="flex items-center gap-1.5 text-left text-danger hover:underline"
++            onClick={() => {
++              const el = area.current;
++              const at = parsed && 'index' in parsed ? (parsed.index ?? 0) : 0;
++              if (!el) return;
++              el.focus();
++              el.setSelectionRange(at, Math.min(at + 1, value.length));
++              // Scroll the line into view (the textarea doesn't do it for programmatic selections).
++              const line = value.slice(0, at).split('\n').length;
++              el.scrollTop = Math.max(0, (line - 5) * 20);
++            }}
++          >
++            <AlertTriangle className="size-4 shrink-0" /> {error}
++          </button>
++        ) : (
++          counts && (
++            <span className="text-muted">
++              {counts.feeds.length} feeds · {counts.rules.length} rules
++              {dirty && ' · unsaved changes'}
++            </span>
++          )
++        )}
++        <span className="flex-1" />
++        <Button
++          size="sm"
++          variant="ghost"
++          disabled={!!error}
++          onClick={() => counts && setText(pretty(counts))}
++        >
++          <WandSparkles /> Format
++        </Button>
++        <Button size="sm" variant="ghost" onClick={download}>
++          <Download /> Download
++        </Button>
++        <Button size="sm" variant="ghost" disabled={!dirty} onClick={() => setText(null)}>
++          <RotateCcw /> Undo changes
++        </Button>
++      </div>
++
++      <label className="flex items-center gap-2 text-sm">
++        <input
++          type="checkbox"
++          checked={removeMissing}
++          onChange={(e) => setRemoveMissing(e.target.checked)}
++          className="size-4 accent-[var(--accent)]"
++        />
++        Delete feeds and rules that aren&apos;t in the JSON
++        {removeMissing && (removals.feeds > 0 || removals.rules > 0) && (
++          <span className="text-danger">
++            ({removals.feeds} feeds, {removals.rules} rules)
++          </span>
++        )}
++      </label>
++
++      <div className="flex items-center justify-between gap-2 border-t pt-3">
++        <p className="text-xs text-muted">
++          Saving doesn&apos;t download anything already in the feeds. Ctrl/⌘+S saves.
++        </p>
++        <div className="flex gap-2">
++          <Button
++            variant="ghost"
++            onClick={() => (!dirty || confirm('Discard your changes?')) && onClose()}
++          >
++            Cancel
++          </Button>
++          <Button type="submit" variant="primary" disabled={!!error || save.isPending}>
++            {save.isPending && <Loader2 className="animate-spin" />}
++            Save
++          </Button>
++        </div>
++      </div>
++    </form>
++  );
++}
+diff --git a/apps/web/src/lib/api.ts b/apps/web/src/lib/api.ts
+index 608186b..5d1aebb 100644
+--- a/apps/web/src/lib/api.ts
++++ b/apps/web/src/lib/api.ts
+@@ -4,6 +4,8 @@ import type {
+   QbRuleImportRequest,
+   RuleImportResult,
+   RuleFeedsRequest,
++  RssConfig,
++  RssConfigSaveResult,
+   RuleFeedsResult,
+   FeedDTO,
+   RssHistoryDTO,
+@@ -184,6 +186,9 @@ export const api = {
+     request<{ deleted: number }>('POST', '/api/rss/rules/delete', { ids }),
+   importQbRules: (body: QbRuleImportRequest) =>
+     request<RuleImportResult>('POST', '/api/rss/rules/import', body),
++  rssConfig: () => request<RssConfig>('GET', '/api/rss/config'),
++  saveRssConfig: (cfg: RssConfig & { removeMissing: boolean }) =>
++    request<RssConfigSaveResult>('PUT', '/api/rss/config', cfg),
+   setRuleFeeds: (body: Partial<RuleFeedsRequest> & { ids: string[] }) =>
+     request<RuleFeedsResult>('POST', '/api/rss/rules/feeds', body),
+   previewRule: (r: RuleInput) => request<ArticleDTO[]>('POST', '/api/rss/rules/preview', r),
+diff --git a/apps/web/src/lib/json-error.ts b/apps/web/src/lib/json-error.ts
+new file mode 100644
+index 0000000..7c70820
+--- /dev/null
++++ b/apps/web/src/lib/json-error.ts
+@@ -0,0 +1,73 @@
++/**
++ * Where JSON text first goes wrong: "Line L, column C: problem" and the offset. Browsers' own messages
++ * don't say where (Chrome quotes a snippet), which is useless in a long document.
++ */
++export function locateJsonError(text: string): { message: string; index: number } {
++  let i = 0;
++  const ws = () => {
++    while (i < text.length && ' \t\n\r'.includes(text[i]!)) i++;
++  };
++  const fail = (what: string): never => {
++    throw new Error(what);
++  };
++  const expect = (ch: string) => (text[i] === ch ? i++ : fail(`expected “${ch}”`));
++  const str = () => {
++    expect('"');
++    while (i < text.length && text[i] !== '"') {
++      if (text[i] === '\n') fail('line break inside a string');
++      i += text[i] === '\\' ? 2 : 1;
++    }
++    expect('"');
++  };
++  const value = (): void => {
++    ws();
++    const c = text[i];
++    if (c === '{') {
++      i++;
++      ws();
++      if (text[i] === '}') return void i++;
++      for (;;) {
++        ws();
++        if (text[i] !== '"') fail(text[i] === '}' ? 'trailing comma' : 'expected a "key"');
++        str();
++        ws();
++        expect(':');
++        value();
++        ws();
++        if (text[i] === ',') i++;
++        else if (text[i] === '}') return void i++;
++        else fail('expected “,” or “}”');
++      }
++    }
++    if (c === '[') {
++      i++;
++      ws();
++      if (text[i] === ']') return void i++;
++      for (;;) {
++        ws();
++        if (text[i] === ']') fail('trailing comma');
++        value();
++        ws();
++        if (text[i] === ',') i++;
++        else if (text[i] === ']') return void i++;
++        else fail('expected “,” or “]”');
++      }
++    }
++    if (c === '"') return str();
++    const lit = /^(true|false|null|-?\d+(\.\d+)?([eE][+-]?\d+)?)/.exec(text.slice(i, i + 40));
++    if (lit) return void (i += lit[0].length);
++    fail(c === undefined ? 'unexpected end' : `unexpected “${c}”`);
++  };
++  try {
++    value();
++    ws();
++    if (i < text.length) fail('unexpected text after the end');
++    return { message: 'Invalid JSON', index: 0 };
++  } catch (e) {
++    const before = text.slice(0, i).split('\n');
++    return {
++      message: `Line ${before.length}, column ${before.at(-1)!.length + 1}: ${(e as Error).message}`,
++      index: i,
++    };
++  }
++}
+diff --git a/apps/web/src/pages/Rss.tsx b/apps/web/src/pages/Rss.tsx
+index 14070dd..96fe3bd 100644
+--- a/apps/web/src/pages/Rss.tsx
++++ b/apps/web/src/pages/Rss.tsx
+@@ -20,6 +20,7 @@ import { toast } from 'sonner';
+ import type { ArticleDTO, FeedDTO, RuleDTO, RuleImportResult, RuleInput } from '@draxmax/shared';
+ import { PathInput } from '@/components/FolderPicker';
+ import { MissingTab } from '@/components/MissingEpisodes';
++import { RssJsonEditorButton } from '@/components/RssJsonEditor';
+ import { SelectedRulesPanel } from '@/components/SelectedRulesPanel';
+ import { Badge } from '@/components/ui/badge';
+ import { Button } from '@/components/ui/button';
+@@ -54,6 +55,7 @@ export function RssPage() {
+             Follow feeds and download matching releases automatically.
+           </p>
+         </div>
++        <RssJsonEditorButton />
+       </header>
+       <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
+         <TabsList
+diff --git a/apps/web/src/pages/Settings.tsx b/apps/web/src/pages/Settings.tsx
+index 9f6fb2f..c650581 100644
+--- a/apps/web/src/pages/Settings.tsx
++++ b/apps/web/src/pages/Settings.tsx
+@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+ import {
+   Bell,
+   Download,
++  FolderPlus,
+   Gauge,
+   HelpCircle,
+   KeyRound,
+@@ -283,8 +284,9 @@ export function SettingsPage() {
+               ctx={ctx}
+               k="libraryFolders"
+               label="Library folders"
+-              hint="Folders scanned for shows and movies you already own (one per line)."
++              hint="Folders scanned for shows and movies you already own, one per line. Use Add folder to pick one, or type and edit paths here."
+               mono
++              folders
+             />
+             <TextField
+               ctx={ctx}
+@@ -577,12 +579,15 @@ function ListField({
+   label,
+   hint,
+   mono,
++  folders,
+ }: {
+   ctx: FieldCtx;
+   k: string;
+   label: string;
+   hint?: ReactNode;
+   mono?: boolean;
++  /** Entries are folders: offer an "Add folder" picker that appends to the list. */
++  folders?: boolean;
+ }) {
+   const list = (ctx.s[k] as string[] | undefined) ?? [];
+   const [draft, setDraft] = useDraft(list.join('\n'));
+@@ -602,8 +607,29 @@ function ListField({
+         disabled={ctx.locked.has(k)}
+         onChange={(e) => setDraft(e.target.value)}
+         onBlur={commit}
+-        className={cn('min-h-28', mono && 'font-mono text-xs')}
++        wrap={mono ? 'off' : undefined}
++        className={cn('min-h-28', mono && 'whitespace-pre font-mono text-xs')}
+       />
++      {folders && !ctx.locked.has(k) && (
++        <div className="flex justify-end">
++          <BrowseButton
++            value={list.at(-1)}
++            className="h-9"
++            onPick={(p) => {
++              const lines = draft
++                .split('\n')
++                .map((l) => l.trim())
++                .filter(Boolean);
++              if (lines.includes(p)) return toast.info('That folder is already in the list');
++              const next = [...lines, p];
++              setDraft(next.join('\n'));
++              ctx.save({ [k]: next });
++            }}
++          >
++            <FolderPlus /> Add folder
++          </BrowseButton>
++        </div>
++      )}
+     </div>
+   );
+ }
+diff --git a/packages/core/src/rss/rss-repo.ts b/packages/core/src/rss/rss-repo.ts
+index 3329698..89273a6 100644
+--- a/packages/core/src/rss/rss-repo.ts
++++ b/packages/core/src/rss/rss-repo.ts
+@@ -114,6 +114,19 @@ export class RssRepository {
+     return r ? feedFromRow(r) : null;
+   }
+ 
++  /** Runs `fn` in one transaction (rolled back if it throws). */
++  transaction<T>(fn: () => T): T {
++    this.db.exec('BEGIN');
++    try {
++      const out = fn();
++      this.db.exec('COMMIT');
++      return out;
++    } catch (err) {
++      this.db.exec('ROLLBACK');
++      throw err;
++    }
++  }
++
+   saveFeed(f: FeedRow): void {
+     this.db
+       .prepare(
+diff --git a/packages/core/src/rss/rss-service.test.ts b/packages/core/src/rss/rss-service.test.ts
+index 3e303f0..4060564 100644
+--- a/packages/core/src/rss/rss-service.test.ts
++++ b/packages/core/src/rss/rss-service.test.ts
+@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
+ import { tmpdir } from 'node:os';
+ import { join } from 'node:path';
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
++import { rssConfigSchema } from '@draxmax/shared';
+ import { createCore, type Core } from '../core.ts';
+ import { FakeEngine, makeTorrentFile } from '../testing/index.ts';
+ 
+@@ -296,4 +297,62 @@ describe('RssService', () => {
+       }),
+     ).rejects.toThrow(/Feed not found/);
+   });
++
++  it('edits feeds and rules as one JSON document', async () => {
++    xml = feedXml([]);
++    const a = await core.rss.addFeed('https://feeds.example/a');
++    await core.rss.saveRule({
++      name: 'Show',
++      enabled: true,
++      priority: 0,
++      mustContain: ['show 720'],
++      mustNotContain: [],
++      useRegex: false,
++      smartEpisodeFilter: false,
++      assignedFeedIds: [a.id],
++      tags: [],
++      addPaused: false,
++      savePath: '/media/Show/S01',
++    });
++    const parse = (c: unknown) => rssConfigSchema.parse(c);
++    const cfg = core.rss.exportConfig();
++    expect(cfg.rules[0]).toMatchObject({ name: 'Show', feeds: ['https://feeds.example/a'] });
++
++    // Saving it unchanged writes nothing.
++    expect(core.rss.importConfig(parse(cfg), false)).toEqual({
++      feeds: { created: 0, updated: 0, deleted: 0 },
++      rules: { created: 0, updated: 0, deleted: 0 },
++    });
++
++    // Rename by id, add a feed and a rule using it.
++    const edited = structuredClone(cfg);
++    edited.rules[0]!.name = 'Show (renamed)';
++    edited.feeds.push({ url: 'https://feeds.example/b', title: 'B' });
++    edited.rules.push({ name: 'Other', feeds: ['https://feeds.example/b'] });
++    expect(core.rss.importConfig(parse(edited), false)).toEqual({
++      feeds: { created: 1, updated: 0, deleted: 0 },
++      rules: { created: 1, updated: 1, deleted: 0 },
++    });
++    const rules = core.rss.rules();
++    expect(rules.map((r) => r.name).sort()).toEqual(['Other', 'Show (renamed)']);
++    expect(core.rss.feeds().find((f) => f.url.endsWith('/b'))?.title).toBe('B');
++
++    // Invalid documents change nothing.
++    const bad = structuredClone(edited);
++    bad.rules[1]!.feeds = ['https://feeds.example/unknown'];
++    expect(() => core.rss.importConfig(parse(bad), false)).toThrow(/isn't in "feeds"/);
++    const dup = structuredClone(edited);
++    dup.rules.push({ name: 'Other' });
++    expect(() => core.rss.importConfig(parse(dup), false)).toThrow(/same name/);
++    expect(core.rss.rules()).toHaveLength(2);
++
++    // removeMissing deletes what the document leaves out.
++    expect(
++      core.rss.importConfig(parse({ feeds: [edited.feeds[1]], rules: [edited.rules[1]] }), true),
++    ).toEqual({
++      feeds: { created: 0, updated: 0, deleted: 1 },
++      rules: { created: 0, updated: 0, deleted: 1 },
++    });
++    expect(core.rss.rules().map((r) => r.name)).toEqual(['Other']);
++  });
+ });
+diff --git a/packages/core/src/rss/rss-service.ts b/packages/core/src/rss/rss-service.ts
+index 29b2117..a3879f1 100644
+--- a/packages/core/src/rss/rss-service.ts
++++ b/packages/core/src/rss/rss-service.ts
+@@ -4,6 +4,9 @@ import type {
+   FeedDTO,
+   RssHistoryDTO,
+   RuleDTO,
++  RssConfig,
++  RssConfigInput,
++  RssConfigSaveResult,
+   RuleFeedsRequest,
+   RuleFeedsResult,
+   RuleImportResult,
+@@ -374,6 +377,146 @@ export class RssService {
+     return { updated: changed.length, enabled };
+   }
+ 
++  // --- Feeds and rules as JSON -----------------------------------------------------
++
++  /** Feeds and rules as one editable document (rules reference feeds by URL). */
++  exportConfig(): RssConfig {
++    const feeds = this.repo.feeds();
++    const urlById = new Map(feeds.map((f) => [f.id, f.url]));
++    return {
++      feeds: feeds.map((f) => ({
++        url: f.url,
++        title: f.title,
++        enabled: f.enabled,
++        refreshMinutes: f.refreshMinutes,
++      })),
++      rules: orderRules(this.repo.rules()).map((r) => ({
++        id: r.id,
++        name: r.name,
++        enabled: r.enabled,
++        priority: r.priority,
++        mustContain: r.mustContain,
++        mustNotContain: r.mustNotContain,
++        useRegex: r.useRegex,
++        ...(r.episodeFilter ? { episodeFilter: r.episodeFilter } : {}),
++        smartEpisodeFilter: r.smartEpisodeFilter,
++        ...(r.ignoreSubsequentDays ? { ignoreSubsequentDays: r.ignoreSubsequentDays } : {}),
++        feeds: r.assignedFeedIds.flatMap((id) => urlById.get(id) ?? []),
++        ...(r.category ? { category: r.category } : {}),
++        tags: r.tags,
++        savePath: r.savePath ?? '',
++        addPaused: r.addPaused,
++      })),
++    };
++  }
++
++  /**
++   * Applies an edited document: feeds are matched by URL, rules by id (when given and known)
++   * or name. Everything is validated before anything is written, and written in one
++   * transaction. New feeds are fetched by the scheduler; existing articles aren't re-matched,
++   * so saving never downloads a backlog.
++   */
++  importConfig(cfg: RssConfigInput, removeMissing: boolean): RssConfigSaveResult {
++    const fail = (msg: string): never => {
++      throw new CoreError('invalid_input', msg);
++    };
++    const seenUrls = new Set<string>();
++    for (const f of cfg.feeds) {
++      if (seenUrls.has(f.url)) fail(`Feed ${f.url} is listed twice`);
++      seenUrls.add(f.url);
++    }
++    const existingFeeds = this.repo.feeds();
++    const known = new Set([...seenUrls, ...(removeMissing ? [] : existingFeeds.map((f) => f.url))]);
++    const existingRules = this.repo.rules();
++    const byId = new Map(existingRules.map((r) => [r.id, r]));
++    const byName = new Map(existingRules.map((r) => [r.name, r]));
++    const names = new Set<string>();
++    const ids = new Set<string>();
++    cfg.rules.forEach((r, i) => {
++      const where = `Rule ${i + 1} (“${r.name}”)`;
++      if (names.has(r.name)) fail(`${where}: another rule has the same name`);
++      names.add(r.name);
++      if (r.id) {
++        if (ids.has(r.id)) fail(`${where}: another rule has the same id`);
++        ids.add(r.id);
++      }
++      const missing = r.feeds.find((u) => !known.has(u));
++      if (missing) fail(`${where}: feed ${missing} isn't in "feeds"`);
++      try {
++        validateRule(r);
++      } catch (err) {
++        if (err instanceof RuleSyntaxError) fail(`${where}: ${err.message}`);
++        throw err;
++      }
++    });
++
++    const result: RssConfigSaveResult = {
++      feeds: { created: 0, updated: 0, deleted: 0 },
++      rules: { created: 0, updated: 0, deleted: 0 },
++    };
++    this.repo.transaction(() => {
++      const feedByUrl = new Map(existingFeeds.map((f) => [f.url, f]));
++      for (const f of cfg.feeds) {
++        const prev = feedByUrl.get(f.url);
++        const row: FeedRow = prev
++          ? { ...prev }
++          : {
++              id: randomUUID(),
++              url: f.url,
++              title: new URL(f.url).host,
++              enabled: true,
++              refreshMinutes: null,
++              lastFetched: null,
++              lastError: null,
++              nextFetchAt: new Date().toISOString(),
++              failures: 0,
++              createdAt: new Date().toISOString(),
++            };
++        row.title = f.title ?? row.title;
++        row.enabled = f.enabled;
++        row.refreshMinutes = f.refreshMinutes;
++        const changed = !prev || canonical(prev) !== canonical(row);
++        if (changed) {
++          this.repo.saveFeed(row);
++          result.feeds[prev ? 'updated' : 'created']++;
++        }
++        feedByUrl.set(f.url, row);
++      }
++      if (removeMissing)
++        for (const f of existingFeeds)
++          if (!seenUrls.has(f.url)) {
++            this.repo.deleteFeed(f.id);
++            result.feeds.deleted++;
++          }
++
++      const kept = new Set<string>();
++      for (const r of cfg.rules) {
++        const prev = (r.id ? byId.get(r.id) : undefined) ?? byName.get(r.name) ?? null;
++        const { id: _id, feeds, ...input } = r;
++        const row = toRuleRow(
++          { ...input, assignedFeedIds: feeds.map((u) => feedByUrl.get(u)!.id) },
++          prev,
++        );
++        kept.add(row.id);
++        if (!prev) {
++          this.repo.saveRule(row);
++          result.rules.created++;
++        } else if (canonical(toRuleDTO(row)) !== canonical(toRuleDTO(prev))) {
++          this.repo.saveRule(row);
++          result.rules.updated++;
++        }
++      }
++      if (removeMissing)
++        for (const r of existingRules)
++          if (!kept.has(r.id)) {
++            this.repo.deleteRule(r.id);
++            result.rules.deleted++;
++          }
++    });
++    this.deps.events.emit('rss:updated', null);
++    return result;
++  }
++
+   /** Which current articles a (possibly unsaved) rule would match, ignoring history. */
+   preview(input: RuleInput): ArticleDTO[] {
+     try {
+@@ -492,6 +635,17 @@ export class RssService {
+   }
+ }
+ 
++/** Key-order-independent JSON, ignoring undefined fields (for change detection). */
++function canonical(v: object): string {
++  return JSON.stringify(
++    Object.fromEntries(
++      Object.entries(v)
++        .filter(([, x]) => x !== undefined)
++        .sort(([a], [b]) => a.localeCompare(b)),
++    ),
++  );
++}
++
+ function toRuleRow(input: RuleInput, existing: RuleRow | null): RuleRow {
+   const rule: RuleRow = {
+     id: existing?.id ?? randomUUID(),
+diff --git a/packages/shared/src/api.ts b/packages/shared/src/api.ts
+index 6690e1c..92cb848 100644
+--- a/packages/shared/src/api.ts
++++ b/packages/shared/src/api.ts
+@@ -242,6 +242,42 @@ export const ruleSchema = z.object({
+ });
+ export type RuleInput = z.infer<typeof ruleSchema>;
+ 
++/**
++ * Feeds and rules as one editable JSON document. Rules name their feeds by URL (not id) so
++ * the document reads and edits naturally; `id` is optional and lets a rule be renamed.
++ */
++export const rssConfigSchema = z.object({
++  feeds: z
++    .array(
++      z.object({
++        url: z.url({ protocol: /^https?$/ }).max(2048),
++        title: z.string().trim().min(1).max(200).optional(),
++        enabled: z.boolean().default(true),
++        refreshMinutes: z.number().int().min(5).max(1440).nullable().default(null),
++      }),
++    )
++    .max(1000),
++  rules: z
++    .array(
++      ruleSchema.omit({ assignedFeedIds: true }).extend({
++        id: z.string().min(1).max(100).optional(),
++        /** Feed URLs; empty = every feed. */
++        feeds: z.array(z.string().min(1).max(2048)).max(500).default([]),
++      }),
++    )
++    .max(5000),
++});
++export type RssConfig = z.input<typeof rssConfigSchema>;
++export type RssConfigInput = z.infer<typeof rssConfigSchema>;
++export const rssConfigSaveSchema = rssConfigSchema.extend({
++  /** Delete feeds and rules that aren't in the document. */
++  removeMissing: z.boolean().default(false),
++});
++export interface RssConfigSaveResult {
++  feeds: { created: number; updated: number; deleted: number };
++  rules: { created: number; updated: number; deleted: number };
++}
++
+ export const ruleIdsSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(5000) });
+ 
+ /** Adds and removes feeds on several rules at once. */
+-- 
+2.43.0
+

@@ -1,0 +1,1374 @@
+From c11c76fc9f8a0bbf97c4145ef62a7a949765ff37 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 20:10:34 +0000
+Subject: [PATCH] Security hardening: fix auth bypass, CSRF/DNS rebinding,
+ SSRF, path traversal
+
+Critical
+- Auth bypass: the auth hook tested the raw URL for "/api/", but the router
+  decodes %-escapes, so "/%61pi/settings" (or "/a%70i/fs/dirs?path=/etc")
+  reached the API without a login. The hook now decides by the matched
+  route (and the decoded path).
+
+High
+- CSRF / cross-site WebSocket: state-changing API calls and /api/ws are
+  refused when Origin or Sec-Fetch-Site says another site sent them. This
+  mattered most while the local machine is trusted without a login.
+- DNS rebinding: "local machine" trust now also requires a local Host
+  header (IP, localhost, or this machine's name).
+- Path traversal: torrents whose file paths escape the save folder
+  (backslash "..", absolute, drive or ADS paths) are refused when added
+  and when magnet metadata arrives (parse-torrent only resolves "/" parts).
+- SSRF: links from feed items and search results may only reach public
+  addresses unless they point at the feed's / Torznab endpoint's own host;
+  redirects are followed manually and checked per hop.
+- First-run takeover: creating the first login from another device needs
+  a one-time setup code printed in the server log.
+
+Medium / low
+- Changing the login needs the current password; removing it is local-only.
+- Login always runs the password hash (no username timing oracle).
+- API tokens (?token=, apikey, passkey) are redacted from request logs.
+- Electron: exact-origin navigation check (prefix test let other local
+  ports in), IPC only from our UI, openPath never executes files.
+- WebSocket maxPayload 64 KiB; watch-folder files capped at 16 MiB;
+  release titles capped before regex parsing; failure table bounded.
+- Config dir 0700, database 0600 (it holds passkey feed URLs).
+- Headers: CORP/COOP same-origin, Permissions-Policy, CSP connect-src 'self';
+  Secure cookie behind TLS proxies.
+- CI token limited to contents:read; runtime image applies Debian updates.
+- Redacted a tracker passkey committed in feeds.json and
+  download_rules.json (it remains in git history: rotate it).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013nmSf2zmYoNEfzcNutPGUX
+---
+ .github/workflows/ci.yml                      |   4 +
+ Dockerfile                                    |   4 +
+ README.md                                     |   7 +-
+ apps/desktop/src/main.ts                      |  33 ++++-
+ apps/server/src/app.test.ts                   | 112 ++++++++++++++++-
+ apps/server/src/app.ts                        |  75 +++++++++++-
+ apps/server/src/auth.ts                       | 102 ++++++++++++++--
+ apps/server/src/main.ts                       |   4 +
+ apps/server/src/routes/auth.ts                |  33 ++++-
+ apps/web/src/lib/api.ts                       |   9 +-
+ apps/web/src/pages/Auth.tsx                   |  21 +++-
+ apps/web/src/pages/Settings.tsx               |  29 ++++-
+ packages/core/src/core.ts                     |  10 +-
+ packages/core/src/db/database.ts              |  14 ++-
+ packages/core/src/media/parse-title.ts        |   4 +-
+ packages/core/src/missing/missing-service.ts  |  18 ++-
+ packages/core/src/net/http.ts                 | 114 +++++++++++++++---
+ packages/core/src/rss/rss-service.test.ts     |   5 +-
+ packages/core/src/rss/rss-service.ts          |  42 +++++--
+ packages/core/src/rss/rules.ts                |   4 +-
+ packages/core/src/security.test.ts            |  82 +++++++++++++
+ packages/core/src/torrent/sources.ts          |  14 +++
+ .../core/src/torrent/webtorrent-engine.ts     |  12 +-
+ packages/core/src/watch/watch-folder.ts       |   8 ++
+ 24 files changed, 688 insertions(+), 72 deletions(-)
+ create mode 100644 packages/core/src/security.test.ts
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 431edf4..6b495e6 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -4,6 +4,10 @@ on:
+     branches: [main]
+   pull_request:
+ 
++# Least privilege: CI only needs to read the code.
++permissions:
++  contents: read
++
+ jobs:
+   check:
+     runs-on: ubuntu-latest
+diff --git a/Dockerfile b/Dockerfile
+index cfd835d..8b0c4f1 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -31,6 +31,10 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+ 
+ # ---- Runtime ----
+ FROM node:24-bookworm-slim
++# Pick up Debian security fixes released since the base image was built.
++RUN apt-get update \
++ && apt-get -y upgrade --no-install-recommends \
++ && rm -rf /var/lib/apt/lists/*
+ ENV NODE_ENV=production \
+     HOST=0.0.0.0 \
+     PORT=8895 \
+diff --git a/README.md b/README.md
+index c8380cc..a296cb2 100644
+--- a/README.md
++++ b/README.md
+@@ -101,7 +101,12 @@ Everything is configurable in **Settings**. Every value can also be set by an en
+ 
+ ### Security model
+ 
+-- **No login configured:** only the local machine (loopback, not proxied) can use DraxMax. Any other device is shown a "Secure your DraxMax" screen and must create a login first.
++- **No login configured:** only the local machine (loopback, not proxied, addressed by IP, `localhost` or its own name) can use DraxMax. Any other device is shown a "Secure your DraxMax" screen and must create a login first, using the one-time **setup code** printed in the log (`docker logs draxmax`), so nobody else can claim a fresh instance.
++- **Cross-site protection:** state-changing API calls and WebSocket connections from other websites are refused (Origin / Sec-Fetch-Site checks), and DNS-rebinding hostnames don't count as the local machine.
++- **Changing the login** needs the current password. Removing it is only possible on the DraxMax machine itself.
++- **Network fetches:** links taken from feeds and search results may only reach public addresses, unless they point at the feed's own host (e.g. Prowlarr on your LAN). Redirects are checked hop by hop.
++- **Torrents** whose file paths would escape the save folder (`..`, absolute or Windows paths) are refused.
++- **Files:** the config folder is `0700`; `settings.json`, `secret.key` and the database are `0600`. API tokens are redacted from logs.
+ - **Login configured:** every client needs a session. Sessions are HttpOnly, SameSite=Strict cookies. Passwords are hashed with scrypt, and repeated failed logins are rate-limited.
+ - **Headers:** responses carry a strict Content-Security-Policy, `nosniff`, no-referrer and frame-deny.
+ - **Privacy:** DraxMax never phones home. The only outbound calls besides BitTorrent traffic are the RSS feeds you add and, if enabled, TMDB and AniList.
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 864834a..07fb1b3 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -136,7 +136,7 @@ function createWindow(): void {
+     return { action: 'deny' };
+   });
+   mainWindow.webContents.on('will-navigate', (e, url) => {
+-    if (!url.startsWith(baseUrl)) {
++    if (!isOwnOrigin(url)) {
+       e.preventDefault();
+       if (/^https?:\/\//.test(url)) void shell.openExternal(url);
+     }
+@@ -254,8 +254,24 @@ function applyLoginItem(s: Settings): void {
+   app.setLoginItemSettings({ openAtLogin: s.startOnLogin, args });
+ }
+ 
++/** Exact origin match: a prefix test would let http://127.0.0.1:12345 pass for port 1234. */
++function isOwnOrigin(url: string | undefined): boolean {
++  if (!url || !baseUrl) return false;
++  try {
++    return new URL(url).origin === baseUrl;
++  } catch {
++    return false;
++  }
++}
++
++/** IPC is only for our own UI, never for a page that got loaded some other way. */
++function fromOwnUi(e: Electron.IpcMainInvokeEvent): void {
++  if (!isOwnOrigin(e.senderFrame?.url)) throw new Error('Not allowed');
++}
++
+ function registerIpc(): void {
+-  ipcMain.handle(IPC.pickTorrentFiles, async () => {
++  ipcMain.handle(IPC.pickTorrentFiles, async (e) => {
++    fromOwnUi(e);
+     const win = BrowserWindow.getFocusedWindow() ?? mainWindow;
+     const opts = {
+       title: 'Add torrent files',
+@@ -271,7 +287,8 @@ function registerIpc(): void {
+       })),
+     );
+   });
+-  ipcMain.handle(IPC.pickFolder, async (_e, defaultPath: unknown) => {
++  ipcMain.handle(IPC.pickFolder, async (e, defaultPath: unknown) => {
++    fromOwnUi(e);
+     const win = BrowserWindow.getFocusedWindow() ?? mainWindow;
+     const opts = {
+       title: 'Choose folder',
+@@ -281,8 +298,14 @@ function registerIpc(): void {
+     const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+     return res.canceled ? null : (res.filePaths[0] ?? null);
+   });
+-  ipcMain.handle(IPC.openPath, async (_e, path: unknown) => {
+-    if (typeof path !== 'string') return;
++  ipcMain.handle(IPC.openPath, async (e, path: unknown) => {
++    fromOwnUi(e);
++    if (typeof path !== 'string' || !path) return;
++    // Only folders are opened. Opening a file would run it if it's a program (e.g. an
++    // .exe that arrived in a torrent), so files are revealed in their folder instead.
++    const info = await stat(path).catch(() => null);
++    if (!info) throw new Error('Folder not found');
++    if (!info.isDirectory()) return shell.showItemInFolder(path);
+     const err = await shell.openPath(path);
+     if (err) throw new Error(err);
+   });
+diff --git a/apps/server/src/app.test.ts b/apps/server/src/app.test.ts
+index e2bb117..e1c70b7 100644
+--- a/apps/server/src/app.test.ts
++++ b/apps/server/src/app.test.ts
+@@ -7,7 +7,7 @@ import type { FastifyInstance } from 'fastify';
+ import { createCore, type Core } from '@draxmax/core';
+ import { FakeEngine, makeTorrentFile } from '@draxmax/core/testing';
+ import type { ServerEvent, SettingsResponse, TorrentDTO } from '@draxmax/shared';
+-import { buildServer } from './app.ts';
++import { buildServer, redactUrl } from './app.ts';
+ 
+ const MAGNET = 'magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&dn=Cosmos';
+ 
+@@ -334,12 +334,29 @@ describe('Web UI auth', () => {
+       ...REMOTE,
+     });
+     expect(weak.statusCode).toBe(400);
+-    const setupRes = await app.inject({
++    // Remote setup needs the one-time code from the server log.
++    expect(remote.json()).toMatchObject({ setupRequired: true });
++    const noCode = await app.inject({
+       method: 'POST',
+       url: '/api/auth/setup',
+       payload: { username: 'me', password: 'correct horse' },
+       ...REMOTE,
+     });
++    expect(noCode.statusCode).toBe(403);
++    expect(noCode.json().setupCodeRequired).toBe(true);
++    const wrongCode = await app.inject({
++      method: 'POST',
++      url: '/api/auth/setup',
++      payload: { username: 'me', password: 'correct horse', setupCode: 'NOPE' },
++      ...REMOTE,
++    });
++    expect(wrongCode.statusCode).toBe(403);
++    const setupRes = await app.inject({
++      method: 'POST',
++      url: '/api/auth/setup',
++      payload: { username: 'me', password: 'correct horse', setupCode: app.auth.setupCode },
++      ...REMOTE,
++    });
+     expect(setupRes.statusCode).toBe(200);
+     const cookie = cookieOf(setupRes);
+     expect(cookie).not.toBe('');
+@@ -449,3 +466,94 @@ describe('token auth', () => {
+     expect((await bearer('s3cret')).statusCode).toBe(200);
+   });
+ });
++
++describe('security', () => {
++  beforeEach(() => setup());
++
++  it('requires auth however the API path is spelled', async () => {
++    for (const url of [
++      '/%61pi/settings',
++      '/a%70i/fs/dirs?path=/etc',
++      '/API/torrents',
++      '//api/torrents',
++      '/api/torrents/',
++      '/%2561pi/torrents',
++    ]) {
++      const res = await app.inject({ url, ...REMOTE });
++      expect([401, 404], url).toContain(res.statusCode);
++      expect(res.body, url).not.toMatch(/downloadPath|"dirs"/);
++    }
++    const post = await app.inject({ method: 'POST', url: '/%61pi/torrents/pause-all', ...REMOTE });
++    expect(post.statusCode).toBe(401);
++  });
++
++  it('blocks cross-site requests and DNS rebinding against the trusted local machine', async () => {
++    // A page on another site POSTing to the local instance (CSRF).
++    for (const headers of [
++      { origin: 'https://evil.example' },
++      { origin: 'null' },
++      { 'sec-fetch-site': 'cross-site' },
++    ]) {
++      const res = await app.inject({ method: 'POST', url: '/api/torrents/pause-all', headers });
++      expect(res.statusCode, JSON.stringify(headers)).toBe(403);
++    }
++    // Same-origin requests from the Web UI still work.
++    const same = await app.inject({
++      method: 'POST',
++      url: '/api/torrents/pause-all',
++      headers: { host: '127.0.0.1:8895', origin: 'http://127.0.0.1:8895' },
++    });
++    expect(same.statusCode).toBe(204);
++    // A rebinding domain resolving to 127.0.0.1 isn't "this machine".
++    const rebound = await app.inject({
++      url: '/api/settings',
++      headers: { host: 'evil.example:8895' },
++    });
++    expect(rebound.statusCode).toBe(401);
++    expect(
++      (await app.inject({ url: '/api/settings', headers: { host: 'localhost:8895' } })).statusCode,
++    ).toBe(200);
++    // Cross-site WebSocket handshakes are refused too.
++    const ws = await app.inject({
++      url: '/api/ws',
++      headers: { origin: 'https://evil.example', connection: 'upgrade', upgrade: 'websocket' },
++    });
++    expect(ws.statusCode).toBe(403);
++  });
++
++  it('keeps tokens out of logged URLs and sends hardening headers', async () => {
++    expect(redactUrl('/api/ws?token=abc&x=1')).toBe('/api/ws?token=[redacted]&x=1');
++    expect(redactUrl('/x?apikey=k&passkey=p')).toBe('/x?apikey=[redacted]&passkey=[redacted]');
++    const res = await app.inject('/api/health');
++    expect(res.headers['cross-origin-resource-policy']).toBe('same-origin');
++    expect(res.headers['x-content-type-options']).toBe('nosniff');
++  });
++
++  it('needs the current password to change the login, and removes it only locally', async () => {
++    const setupRes = await app.inject({
++      method: 'POST',
++      url: '/api/auth/setup',
++      payload: { username: 'me', password: 'correct horse' },
++    });
++    const cookie = cookieOf(setupRes);
++    const change = (currentPassword?: string) =>
++      app.inject({
++        method: 'PUT',
++        url: '/api/auth/credentials',
++        payload: { username: 'me', password: 'battery staple', currentPassword },
++        headers: { cookie },
++        ...REMOTE,
++      });
++    expect((await change()).statusCode).toBe(403);
++    expect((await change('wrong password')).statusCode).toBe(403);
++    const ok = await change('correct horse');
++    expect(ok.statusCode).toBe(200);
++    const removeRemote = await app.inject({
++      method: 'DELETE',
++      url: '/api/auth/credentials',
++      headers: { cookie: cookieOf(ok) },
++      ...REMOTE,
++    });
++    expect(removeRemote.statusCode).toBe(403);
++  });
++});
+diff --git a/apps/server/src/app.ts b/apps/server/src/app.ts
+index 69d84a3..860313b 100644
+--- a/apps/server/src/app.ts
++++ b/apps/server/src/app.ts
+@@ -37,13 +37,30 @@ const CSP = [
+   "style-src 'self' 'unsafe-inline'",
+   "img-src 'self' data: https:",
+   "font-src 'self' data:",
+-  "connect-src 'self' ws: wss:",
++  "connect-src 'self'",
+   "object-src 'none'",
+   "base-uri 'none'",
+   "frame-ancestors 'none'",
+   "form-action 'self'",
+ ].join('; ');
+ 
++/** Removes credentials from URLs before they're logged. */
++export function redactUrl(url: string): string {
++  return url.replace(/([?&](?:token|apikey|passkey)=)[^&#]*/gi, '$1[redacted]');
++}
++
++/** Decodes a URL path for policy checks; malformed escapes count as "/api" to stay closed. */
++function decodedPath(url: string): string {
++  const path = url.split('?')[0]!;
++  try {
++    return decodeURIComponent(path);
++  } catch {
++    return '/api/';
++  }
++}
++
++const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
++
+ /** Endpoints reachable without authorization. */
+ const PUBLIC_API = new Set([
+   '/api/health',
+@@ -72,7 +89,21 @@ declare module 'fastify' {
+  */
+ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
+   const { core } = opts;
+-  const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 24 * 1024 * 1024 });
++  const logger =
++    opts.logger && typeof opts.logger === 'object'
++      ? {
++          ...opts.logger,
++          // API tokens may travel as `?token=` (desktop app); keep them out of logs.
++          serializers: {
++            req: (req: { method: string; url: string; ip?: string }) => ({
++              method: req.method,
++              url: redactUrl(req.url),
++              remoteAddress: req.ip,
++            }),
++          },
++        }
++      : (opts.logger ?? false);
++  const app = Fastify({ logger, bodyLimit: 24 * 1024 * 1024 });
+   const startedAt = Date.now();
+   const auth = new AuthService(core, { ...opts.auth, token: opts.token });
+   app.decorate('auth', auth);
+@@ -98,12 +129,40 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
+   await app.register(fastifyCookie);
+   // Must come before the auth hook: the plugin's own hooks close upgrade sockets that get a
+   // plain HTTP reply (e.g. 401). Registered after it, every rejected /api/ws leaked a socket.
+-  await app.register(fastifyWebsocket);
++  // Clients never send anything large; don't let one make the server buffer 100 MB (ws default).
++  await app.register(fastifyWebsocket, { options: { maxPayload: 64 * 1024 } });
+ 
+   app.addHook('onRequest', async (req, reply) => {
+-    if (!req.url.startsWith('/api/')) return;
+-    const path = req.url.split('?')[0]!;
+-    if (PUBLIC_API.has(path)) return;
++    // Decide by the route that matched, not the raw URL: the router decodes %-escapes, so
++    // "/%61pi/settings" reaches "/api/settings" while not starting with "/api/".
++    const route = req.routeOptions.url;
++    const path = decodedPath(req.url);
++    const isApi = (route ?? path).toLowerCase().startsWith('/api') || /^\/+api\b/i.test(path);
++    if (!isApi) return;
++
++    // Cross-site requests: browsers attach Origin / Sec-Fetch-Site. A page on another site
++    // must never drive the API (CSRF), including through a WebSocket (CSWSH) or while the
++    // local machine is trusted without a login.
++    if (!SAFE_METHODS.has(req.method) || route === '/api/ws') {
++      const origin = req.headers.origin;
++      const allowedHosts = [req.headers.host, req.headers['x-forwarded-host']]
++        .flatMap((h) => (typeof h === 'string' ? h.split(',') : []))
++        .map((h) => h.trim().toLowerCase())
++        .filter(Boolean);
++      // Sec-Fetch-Site isn't usable for WebSockets: Chrome reports ws:// as cross-site even
++      // for the page's own server (ws vs http scheme). Origin is checked for those instead.
++      let crossOrigin = route !== '/api/ws' && req.headers['sec-fetch-site'] === 'cross-site';
++      if (origin && origin !== 'null') {
++        try {
++          crossOrigin ||= !allowedHosts.includes(new URL(origin).host.toLowerCase());
++        } catch {
++          crossOrigin = true;
++        }
++      } else if (origin === 'null') crossOrigin = true;
++      if (crossOrigin) return reply.status(403).send({ error: 'Cross-site request blocked' });
++    }
++
++    if (route && PUBLIC_API.has(route)) return;
+     if (!auth.isAuthorized(req)) {
+       return reply
+         .status(401)
+@@ -114,6 +173,10 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
+   app.addHook('onSend', async (_req, reply, payload) => {
+     reply.header('x-content-type-options', 'nosniff');
+     reply.header('referrer-policy', 'no-referrer');
++    // Other sites can't embed or read our responses (e.g. API JSON as a <script>).
++    reply.header('cross-origin-resource-policy', 'same-origin');
++    reply.header('cross-origin-opener-policy', 'same-origin');
++    reply.header('permissions-policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+     const type = String(reply.getHeader('content-type') ?? '');
+     if (type.startsWith('text/html')) {
+       reply.header('content-security-policy', CSP);
+diff --git a/apps/server/src/auth.ts b/apps/server/src/auth.ts
+index 00c3f20..8a78527 100644
+--- a/apps/server/src/auth.ts
++++ b/apps/server/src/auth.ts
+@@ -1,4 +1,6 @@
+ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
++import { isIP } from 'node:net';
++import { hostname } from 'node:os';
+ import type { FastifyReply, FastifyRequest } from 'fastify';
+ import type { Core } from '@draxmax/core';
+ 
+@@ -38,6 +40,28 @@ export function isLoopback(ip: string | undefined): boolean {
+   );
+ }
+ 
++/** Host part of a Host header ("[::1]:8895" → "::1", "example.org:80" → "example.org"). */
++export function hostOf(header: string | undefined): string {
++  if (!header) return '';
++  const h = header.trim().toLowerCase();
++  if (h.startsWith('[')) return h.slice(1, h.indexOf(']'));
++  return h.replace(/:\d+$/, '');
++}
++
++/**
++ * Whether a Host header can be trusted for "local machine" access. DNS rebinding points an
++ * attacker's domain (e.g. evil.example) at 127.0.0.1, so the browser sends that domain as
++ * Host. Real local access uses an IP, `localhost`, or this machine's (dot-less) name.
++ */
++export function isLocalHostHeader(header: string | undefined): boolean {
++  const h = hostOf(header);
++  if (!h) return true; // HTTP/1.0 clients and tools without a Host header.
++  if (isIP(h)) return true;
++  if (h === 'localhost' || h.endsWith('.localhost')) return true;
++  const self = hostname().toLowerCase();
++  return h === self || h === self.split('.')[0] || !h.includes('.');
++}
++
+ export interface AuthOptions {
+   /** Per-launch API token (desktop) or `API_TOKEN` env. */
+   token?: string | undefined;
+@@ -52,6 +76,8 @@ export interface AuthStatus {
+   authenticated: boolean;
+   /** No login exists yet and this client is remote: it must create one before using the API. */
+   setupRequired: boolean;
++  /** Creating that login from here needs the one-time setup code from the server log. */
++  setupCodeRequired: boolean;
+   username: string | null;
+   /** Credentials come from environment variables and can't be changed in the UI. */
+   managedByEnv: boolean;
+@@ -68,6 +94,12 @@ export class AuthService {
+   private readonly sessions = new Map<string, number>();
+   private readonly failures = new Map<string, { count: number; since: number }>();
+   private readonly envHash: string | null;
++  /**
++   * One-time code a remote client must give to create the first login. Without it, anyone
++   * who reaches a fresh instance (internet, port-forward, Docker bridge where every client
++   * looks local-network) could claim it before the owner does.
++   */
++  readonly setupCode = randomBytes(6).toString('hex').toUpperCase();
+ 
+   constructor(
+     private readonly core: Core,
+@@ -88,6 +120,10 @@ export class AuthService {
+     return this.envHash !== null;
+   }
+ 
++  isTokenRequest(req: FastifyRequest): boolean {
++    return this.tokenOk(req);
++  }
++
+   private tokenOk(req: FastifyRequest): boolean {
+     if (!this.opts.token) return false;
+     const header = req.headers.authorization;
+@@ -119,6 +155,7 @@ export class AuthService {
+       configured,
+       authenticated,
+       setupRequired: !configured && !authenticated,
++      setupCodeRequired: !configured && !this.isLocal(req),
+       username: configured ? this.core.settings.get().webuiUsername : null,
+       managedByEnv: this.managedByEnv(),
+     };
+@@ -129,32 +166,71 @@ export class AuthService {
+     if (this.opts.disabled) return true;
+     if (this.tokenOk(req)) return true;
+     if (this.configured()) return this.sessionOk(req);
+-    // No credentials yet: only the local machine is trusted. A proxied request may originate
+-    // anywhere even when the proxy itself connects over loopback, so it never counts.
++    // No credentials yet: only the local machine is trusted.
++    return this.isLocal(req);
++  }
++
++  /**
++   * A request from this machine: loopback, not proxied (a proxy may forward anyone even
++   * though it connects over loopback), and not a DNS-rebinding page (Host must be local).
++   */
++  isLocal(req: FastifyRequest): boolean {
+     const proxied =
+       'x-forwarded-for' in req.headers || 'forwarded' in req.headers || 'x-real-ip' in req.headers;
+-    return !proxied && isLoopback(req.ip);
++    return !proxied && isLoopback(req.ip) && isLocalHostHeader(req.headers.host);
+   }
+ 
+-  /** Checks credentials with per-IP rate limiting; returns a new session id on success. */
+-  login(req: FastifyRequest, username: string, password: string): string | 'rate_limited' | null {
++  /** First-login creation: always from this machine, otherwise with the setup code. */
++  setupAllowed(req: FastifyRequest, code: string | undefined): boolean {
++    if (this.isLocal(req) || this.tokenOk(req)) return true;
++    return !!code && safeEqual(code.trim().toUpperCase(), this.setupCode);
++  }
++
++  /** Checks credentials with per-IP rate limiting (shared by login and sensitive changes). */
++  checkCredentials(
++    req: FastifyRequest,
++    username: string,
++    password: string,
++  ): 'ok' | 'wrong' | 'rate_limited' {
+     const ip = req.ip;
++    // Bounded memory: forget expired entries once the table grows.
++    if (this.failures.size > 1000)
++      for (const [k, v] of this.failures)
++        if (Date.now() - v.since >= FAILURE_WINDOW_MS) this.failures.delete(k);
+     const f = this.failures.get(ip);
+     if (f && Date.now() - f.since < FAILURE_WINDOW_MS && f.count >= MAX_FAILURES)
+       return 'rate_limited';
+-    const ok =
+-      this.configured() &&
+-      safeEqual(username, this.core.settings.get().webuiUsername) &&
+-      verifyPassword(password, this.passwordHash());
++    // Always run the (slow) password check so timing doesn't reveal valid usernames.
++    const passwordOk = this.configured() && verifyPassword(password, this.passwordHash());
++    const ok = safeEqual(username, this.core.settings.get().webuiUsername) && passwordOk;
+     if (!ok) {
+       const cur =
+         f && Date.now() - f.since < FAILURE_WINDOW_MS ? f : { count: 0, since: Date.now() };
+       cur.count++;
+       this.failures.set(ip, cur);
+-      return null;
++      return 'wrong';
+     }
+     this.failures.delete(ip);
+-    return this.createSession();
++    return 'ok';
++  }
++
++  /** Returns a new session id on success. */
++  login(req: FastifyRequest, username: string, password: string): string | 'rate_limited' | null {
++    const res = this.checkCredentials(req, username, password);
++    return res === 'ok' ? this.createSession() : res === 'rate_limited' ? res : null;
++  }
++
++  /**
++   * Re-authentication for changing or removing the login, so a stolen session (or a
++   * moment at an unlocked screen) can't lock the owner out. The API token and env-managed
++   * setups skip it; so does a login that doesn't exist yet.
++   */
++  confirmCurrent(
++    req: FastifyRequest,
++    password: string | undefined,
++  ): 'ok' | 'wrong' | 'rate_limited' {
++    if (!this.configured() || this.tokenOk(req)) return 'ok';
++    return this.checkCredentials(req, this.core.settings.get().webuiUsername, password ?? '');
+   }
+ 
+   createSession(): string {
+@@ -192,7 +268,9 @@ export class AuthService {
+       path: '/',
+       httpOnly: true,
+       sameSite: 'strict',
+-      secure: req.protocol === 'https',
++      // Behind a TLS-terminating proxy the hop to us is plain HTTP; trust its header for the
++      // Secure flag only (a forged value can at worst stop this client's own login working).
++      secure: req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https',
+       maxAge: SESSION_TTL_MS / 1000,
+     });
+   }
+diff --git a/apps/server/src/main.ts b/apps/server/src/main.ts
+index 17d8ece..d2176bd 100644
+--- a/apps/server/src/main.ts
++++ b/apps/server/src/main.ts
+@@ -99,3 +99,7 @@ await app.listen({ port, host });
+ app.log.info(
+   `DraxMax listening on http://${host}:${port} (config: ${configPath}, downloads: ${downloadPath})`,
+ );
++if (!app.auth.configured())
++  app.log.warn(
++    `No Web UI login yet. To create one from another device, open the Web UI and enter setup code ${app.auth.setupCode} (from this machine no code is needed).`,
++  );
+diff --git a/apps/server/src/routes/auth.ts b/apps/server/src/routes/auth.ts
+index 8b8fa81..a252734 100644
+--- a/apps/server/src/routes/auth.ts
++++ b/apps/server/src/routes/auth.ts
+@@ -32,10 +32,22 @@ export async function authRoutes(
+     return reply.status(204).send();
+   });
+ 
+-  /** First-time credentials. Allowed for anyone while no login exists (first-run setup). */
++  /**
++   * First-time credentials while no login exists. From this machine it just works; from
++   * anywhere else it needs the one-time setup code printed in the server log.
++   */
+   app.post('/api/auth/setup', async (req, reply) => {
+     if (auth.configured()) return reply.status(409).send({ error: 'A login already exists' });
+-    const { username, password } = newCredentials.parse(req.body);
++    const { username, password, setupCode } = newCredentials
++      .extend({ setupCode: z.string().max(64).optional() })
++      .parse(req.body);
++    if (!auth.setupAllowed(req, setupCode))
++      return reply.status(403).send({
++        error: setupCode
++          ? 'Wrong setup code'
++          : 'Enter the setup code from the DraxMax log (docker logs draxmax)',
++        setupCodeRequired: true,
++      });
+     auth.setCredentials(username, password);
+     const sid = auth.createSession();
+     auth.setCookie(req, reply, sid);
+@@ -45,7 +57,17 @@ export async function authRoutes(
+ 
+   /** Change credentials (requires an authorized request; enforced by the global hook). */
+   app.put('/api/auth/credentials', async (req, reply) => {
+-    const { username, password } = newCredentials.parse(req.body);
++    const { username, password, currentPassword } = newCredentials
++      .extend({ currentPassword: z.string().max(1024).optional() })
++      .parse(req.body);
++    const check = auth.confirmCurrent(req, currentPassword);
++    if (check !== 'ok')
++      return reply.status(check === 'rate_limited' ? 429 : 403).send({
++        error:
++          check === 'rate_limited'
++            ? 'Too many attempts. Try again in a minute.'
++            : 'Current password is wrong',
++      });
+     auth.setCredentials(username, password);
+     const sid = auth.createSession();
+     auth.setCookie(req, reply, sid);
+@@ -54,6 +76,11 @@ export async function authRoutes(
+   });
+ 
+   app.delete('/api/auth/credentials', async (req, reply) => {
++    // Removing the login opens the API to this machine without one; only do it from here.
++    if (!auth.isLocal(req) && !auth.isTokenRequest(req))
++      return reply
++        .status(403)
++        .send({ error: 'The login can only be removed on the DraxMax machine itself' });
+     auth.clearCredentials();
+     reply.clearCookie(SESSION_COOKIE, { path: '/' });
+     return reply.status(204).send();
+diff --git a/apps/web/src/lib/api.ts b/apps/web/src/lib/api.ts
+index 5d1aebb..3d5bd36 100644
+--- a/apps/web/src/lib/api.ts
++++ b/apps/web/src/lib/api.ts
+@@ -101,6 +101,7 @@ export interface AuthStatus {
+   configured: boolean;
+   authenticated: boolean;
+   setupRequired: boolean;
++  setupCodeRequired: boolean;
+   username: string | null;
+   managedByEnv: boolean;
+ }
+@@ -229,9 +230,9 @@ export const api = {
+   login: (username: string, password: string) =>
+     request<AuthStatus>('POST', '/api/auth/login', { username, password }),
+   logout: () => request<undefined>('POST', '/api/auth/logout'),
+-  setupAuth: (username: string, password: string) =>
+-    request<AuthStatus>('POST', '/api/auth/setup', { username, password }),
+-  changeCredentials: (username: string, password: string) =>
+-    request<AuthStatus>('PUT', '/api/auth/credentials', { username, password }),
++  setupAuth: (username: string, password: string, setupCode?: string) =>
++    request<AuthStatus>('POST', '/api/auth/setup', { username, password, setupCode }),
++  changeCredentials: (username: string, password: string, currentPassword?: string) =>
++    request<AuthStatus>('PUT', '/api/auth/credentials', { username, password, currentPassword }),
+   clearCredentials: () => request<undefined>('DELETE', '/api/auth/credentials'),
+ };
+diff --git a/apps/web/src/pages/Auth.tsx b/apps/web/src/pages/Auth.tsx
+index bfcfaa6..fbcf6dd 100644
+--- a/apps/web/src/pages/Auth.tsx
++++ b/apps/web/src/pages/Auth.tsx
+@@ -8,6 +8,8 @@ import { useAuth } from '@/stores/auth';
+ /** Login screen, or first-run "secure your Web UI" when no credentials exist yet. */
+ export function AuthScreen({ mode }: { mode: 'login' | 'setup' }) {
+   const setStatus = useAuth((s) => s.set);
++  const needsCode = useAuth((s) => s.status?.setupCodeRequired ?? false);
++  const [setupCode, setSetupCode] = useState('');
+   const [username, setUsername] = useState(mode === 'setup' ? 'admin' : '');
+   const [password, setPassword] = useState('');
+   const [confirm, setConfirm] = useState('');
+@@ -22,7 +24,7 @@ export function AuthScreen({ mode }: { mode: 'login' | 'setup' }) {
+     try {
+       setStatus(
+         mode === 'setup'
+-          ? await api.setupAuth(username, password)
++          ? await api.setupAuth(username, password, needsCode ? setupCode : undefined)
+           : await api.login(username, password),
+       );
+     } catch (err) {
+@@ -86,6 +88,23 @@ export function AuthScreen({ mode }: { mode: 'login' | 'setup' }) {
+             />
+           </label>
+         )}
++        {mode === 'setup' && needsCode && (
++          <label className="block space-y-1.5">
++            <span className="text-sm font-medium">Setup code</span>
++            <Input
++              value={setupCode}
++              onChange={(e) => setSetupCode(e.target.value)}
++              autoComplete="one-time-code"
++              spellCheck={false}
++              required
++              className="font-mono uppercase"
++            />
++            <span className="block text-xs text-muted">
++              Shown in the DraxMax log, e.g. <code>docker logs draxmax</code>. It proves you own
++              this server.
++            </span>
++          </label>
++        )}
+         {error && (
+           <p role="alert" className="rounded-xl bg-danger/10 px-3 py-2 text-sm text-danger">
+             {error}
+diff --git a/apps/web/src/pages/Settings.tsx b/apps/web/src/pages/Settings.tsx
+index c650581..5b5727b 100644
+--- a/apps/web/src/pages/Settings.tsx
++++ b/apps/web/src/pages/Settings.tsx
+@@ -1000,12 +1000,22 @@ function Security({ data }: { data: SettingsResponse }) {
+   const [username, setUsername] = useState(auth?.username ?? 'admin');
+   const [password, setPassword] = useState('');
+   const [busy, setBusy] = useState(false);
++  const [currentPassword, setCurrentPassword] = useState('');
+ 
+   async function saveCredentials() {
+     setBusy(true);
+     try {
+-      useAuth.getState().set(await api.changeCredentials(username.trim(), password));
++      useAuth
++        .getState()
++        .set(
++          await api.changeCredentials(
++            username.trim(),
++            password,
++            data.authConfigured ? currentPassword : undefined,
++          ),
++        );
+       setPassword('');
++      setCurrentPassword('');
+       toast.success('Login saved');
+     } catch (e) {
+       toast.error((e as Error).message);
+@@ -1038,7 +1048,10 @@ function Security({ data }: { data: SettingsResponse }) {
+         </p>
+       ) : (
+         <form
+-          className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]"
++          className={cn(
++            'grid grid-cols-1 gap-2',
++            data.authConfigured ? 'sm:grid-cols-[1fr_1fr_1fr_auto]' : 'sm:grid-cols-[1fr_1fr_auto]',
++          )}
+           onSubmit={(e) => {
+             e.preventDefault();
+             void saveCredentials();
+@@ -1051,6 +1064,18 @@ function Security({ data }: { data: SettingsResponse }) {
+             autoComplete="username"
+             className="h-9"
+           />
++          {data.authConfigured && (
++            <Input
++              type="password"
++              value={currentPassword}
++              onChange={(e) => setCurrentPassword(e.target.value)}
++              placeholder="Current password"
++              aria-label="Current password"
++              autoComplete="current-password"
++              required
++              className="h-9"
++            />
++          )}
+           <Input
+             type="password"
+             value={password}
+diff --git a/packages/core/src/core.ts b/packages/core/src/core.ts
+index 82f4be0..2406d5c 100644
+--- a/packages/core/src/core.ts
++++ b/packages/core/src/core.ts
+@@ -1,5 +1,5 @@
+ import { join } from 'node:path';
+-import { mkdirSync } from 'node:fs';
++import { chmodSync, mkdirSync } from 'node:fs';
+ import { openDatabase, type Database } from './db/database.ts';
+ import { CategoryRepository, type Category } from './db/category-repo.ts';
+ import { TorrentRepository } from './db/torrent-repo.ts';
+@@ -65,7 +65,13 @@ export interface Core {
+ 
+ /** Composition root: wires services together and restores persisted torrents. */
+ export function createCore(opts: CoreOptions): Core {
+-  mkdirSync(opts.configPath, { recursive: true });
++  mkdirSync(opts.configPath, { recursive: true, mode: 0o700 });
++  try {
++    // Settings, keys and the database are private to the account DraxMax runs as.
++    chmodSync(opts.configPath, 0o700);
++  } catch {
++    // Not ours to change (e.g. a read-only mount point): the files themselves are 0600.
++  }
+   const settings = new SettingsStore(
+     join(opts.configPath, 'settings.json'),
+     { downloadPath: opts.downloadPath },
+diff --git a/packages/core/src/db/database.ts b/packages/core/src/db/database.ts
+index d7aeea3..3492798 100644
+--- a/packages/core/src/db/database.ts
++++ b/packages/core/src/db/database.ts
+@@ -1,5 +1,5 @@
+ import { DatabaseSync } from 'node:sqlite';
+-import { mkdirSync } from 'node:fs';
++import { chmodSync, closeSync, mkdirSync, openSync } from 'node:fs';
+ import { dirname } from 'node:path';
+ import { migrations } from './migrations.ts';
+ 
+@@ -11,7 +11,17 @@ export type Database = DatabaseSync;
+  * without native-module rebuilds.
+  */
+ export function openDatabase(path: string): Database {
+-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
++  if (path !== ':memory:') {
++    mkdirSync(dirname(path), { recursive: true });
++    // Owner-only: it holds feed URLs with tracker passkeys. SQLite gives the -wal/-shm files
++    // the same permissions as the database.
++    closeSync(openSync(path, 'a', 0o600));
++    try {
++      chmodSync(path, 0o600);
++    } catch {
++      // Filesystems without POSIX modes (some network shares): best effort.
++    }
++  }
+   const db = new DatabaseSync(path);
+   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+   migrate(db);
+diff --git a/packages/core/src/media/parse-title.ts b/packages/core/src/media/parse-title.ts
+index f020a43..e632127 100644
+--- a/packages/core/src/media/parse-title.ts
++++ b/packages/core/src/media/parse-title.ts
+@@ -52,7 +52,9 @@ function range(from: number, to: number): number[] {
+ 
+ /** Parses a torrent/release name. */
+ export function parseRelease(name: string): ParsedRelease {
+-  let s = name.trim();
++  // Titles come from feeds and peers; real release names are far shorter than this, and the
++  // cap bounds regex work on hostile input.
++  let s = name.slice(0, 512).trim();
+   // Strip file extension.
+   s = s.replace(/\.(mkv|mp4|avi|m4v|ts|wmv|mov|torrent)$/i, '');
+ 
+diff --git a/packages/core/src/missing/missing-service.ts b/packages/core/src/missing/missing-service.ts
+index 8120967..819d358 100644
+--- a/packages/core/src/missing/missing-service.ts
++++ b/packages/core/src/missing/missing-service.ts
+@@ -7,6 +7,7 @@ import { CoreError } from '../errors.ts';
+ import type { CoreEvents } from '../events.ts';
+ import { fetchBytes } from '../net/http.ts';
+ import type { RssRepository, RuleRow } from '../rss/rss-repo.ts';
++import { sameHost } from '../rss/rss-service.ts';
+ import type { Settings } from '../settings/settings.ts';
+ import type { TorrentManager } from '../torrent/manager.ts';
+ import {
+@@ -47,7 +48,7 @@ export interface MissingDeps {
+   settings: () => Settings;
+   /** Injected for tests. */
+   fetchText?: FetchText;
+-  fetchTorrent?: (url: string) => Promise<Uint8Array>;
++  fetchTorrent?: (url: string, opts: { allowPrivate: boolean }) => Promise<Uint8Array>;
+   /** Spacing between requests to one source (tests use 0). */
+   sourceIntervalMs?: number;
+ }
+@@ -343,7 +344,14 @@ export class MissingService {
+       if (MAGNET_RE.test(result.url)) {
+         torrentId = this.deps.torrents.addMagnet(result.url, opts).id;
+       } else {
+-        const data = await (this.deps.fetchTorrent ?? defaultFetchTorrent)(result.url);
++        // Result links come from indexer content: only a configured Torznab endpoint's own
++        // host may be on the local network.
++        const allowPrivate = parseTorznabUrls(this.deps.settings().torznabUrls).some((u) =>
++          sameHost(u, result.url),
++        );
++        const data = await (this.deps.fetchTorrent ?? defaultFetchTorrent)(result.url, {
++          allowPrivate,
++        });
+         torrentId = (await this.deps.torrents.addTorrentFile(data, opts)).id;
+       }
+       status = 'added';
+@@ -376,8 +384,12 @@ export class MissingService {
+ 
+ const sorted = (s: Iterable<number>) => [...s].sort((a, b) => a - b);
+ 
+-async function defaultFetchTorrent(url: string): Promise<Uint8Array> {
++async function defaultFetchTorrent(
++  url: string,
++  { allowPrivate }: { allowPrivate: boolean },
++): Promise<Uint8Array> {
+   const { body } = await fetchBytes(url, {
++    allowPrivate,
+     maxBytes: 10 * 1024 * 1024,
+     headers: { accept: 'application/x-bittorrent, */*' },
+   });
+diff --git a/packages/core/src/net/http.ts b/packages/core/src/net/http.ts
+index 28742f0..e77327f 100644
+--- a/packages/core/src/net/http.ts
++++ b/packages/core/src/net/http.ts
+@@ -1,3 +1,5 @@
++import { lookup } from 'node:dns/promises';
++import { BlockList, isIP } from 'node:net';
+ import { APP_NAME, APP_VERSION } from '@draxmax/shared';
+ 
+ export const USER_AGENT = `${APP_NAME}/${APP_VERSION}`;
+@@ -9,6 +11,64 @@ export interface FetchOptions {
+   headers?: Record<string, string>;
+   method?: string;
+   body?: string;
++  /**
++   * May the first request target a private, loopback or link-local address? Default true:
++   * admins point DraxMax at LAN services (Prowlarr). Use false for URLs that come from
++   * third-party content (feed items, search results), so a malicious feed can't make the
++   * server probe the local network (SSRF). Redirects from a public address never reach a
++   * private one either way.
++   */
++  allowPrivate?: boolean;
++}
++
++const MAX_REDIRECTS = 5;
++
++/** Addresses that aren't the public internet. */
++const PRIVATE = new BlockList();
++for (const [net, bits] of [
++  ['0.0.0.0', 8],
++  ['10.0.0.0', 8],
++  ['100.64.0.0', 10],
++  ['127.0.0.0', 8],
++  ['169.254.0.0', 16],
++  ['172.16.0.0', 12],
++  ['192.0.0.0', 24],
++  ['192.168.0.0', 16],
++  ['198.18.0.0', 15],
++  ['224.0.0.0', 3],
++] as const)
++  PRIVATE.addSubnet(net, bits, 'ipv4');
++for (const [net, bits] of [
++  ['::', 127],
++  ['fc00::', 7],
++  ['fe80::', 10],
++  ['ff00::', 8],
++] as const)
++  PRIVATE.addSubnet(net, bits, 'ipv6');
++
++export function isPrivateAddress(ip: string): boolean {
++  const v = isIP(ip);
++  if (v === 4) return PRIVATE.check(ip, 'ipv4');
++  if (v !== 6) return true;
++  const lower = ip.toLowerCase();
++  // IPv4-mapped / NAT64 forms carry an IPv4 address in the low 32 bits.
++  const mapped = /^(?:::ffff:|64:ff9b::)(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
++  if (mapped) return PRIVATE.check(mapped[1]!, 'ipv4');
++  return PRIVATE.check(lower, 'ipv6');
++}
++
++/** Whether a URL's host is (or resolves to) a non-public address. */
++async function resolvesPrivate(url: URL): Promise<boolean> {
++  const host = url.hostname.replace(/^\[|\]$/g, '');
++  if (isIP(host)) return isPrivateAddress(host);
++  if (host === 'localhost' || host.endsWith('.localhost')) return true;
++  let addrs;
++  try {
++    addrs = await lookup(host, { all: true, verbatim: true });
++  } catch {
++    throw new HttpError(`Could not resolve ${url.host}`);
++  }
++  return addrs.some((a) => isPrivateAddress(a.address));
+ }
+ 
+ export class HttpError extends Error {
+@@ -31,22 +91,46 @@ export async function fetchBytes(
+   } catch {
+     throw new HttpError(`Invalid URL: ${url}`);
+   }
+-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+-    throw new HttpError(`Unsupported URL scheme: ${parsed.protocol}`);
+   const maxBytes = opts.maxBytes ?? 10 * 1024 * 1024;
+-  const res = await fetch(parsed, {
+-    method: opts.method ?? 'GET',
+-    headers: { 'user-agent': USER_AGENT, ...opts.headers },
+-    body: opts.body,
+-    redirect: 'follow',
+-    signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000),
+-  }).catch((err: Error) => {
+-    throw new HttpError(
+-      err.name === 'TimeoutError'
+-        ? `Timed out fetching ${parsed.host}`
+-        : `Could not reach ${parsed.host}: ${err.message}`,
+-    );
+-  });
++  const signal = AbortSignal.timeout(opts.timeoutMs ?? 20_000);
++  // Redirects are followed by hand so every hop is checked (scheme and address).
++  let res: Response;
++  let firstPrivate: boolean | null = null;
++  for (let hop = 0; ; hop++) {
++    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
++      throw new HttpError(`Unsupported URL scheme: ${parsed.protocol}`);
++    const priv = await resolvesPrivate(parsed);
++    if (firstPrivate === null) {
++      firstPrivate = priv;
++      if (priv && opts.allowPrivate === false)
++        throw new HttpError(`Refusing to fetch ${parsed.host}: not a public address`);
++    } else if (priv && !firstPrivate) {
++      throw new HttpError(`Refusing redirect to ${parsed.host}: not a public address`);
++    }
++    const target = parsed;
++    res = await fetch(target, {
++      method: hop === 0 ? (opts.method ?? 'GET') : 'GET',
++      headers: { 'user-agent': USER_AGENT, ...opts.headers },
++      body: hop === 0 ? opts.body : undefined,
++      redirect: 'manual',
++      signal,
++    }).catch((err: Error) => {
++      throw new HttpError(
++        err.name === 'TimeoutError'
++          ? `Timed out fetching ${target.host}`
++          : `Could not reach ${target.host}: ${err.message}`,
++      );
++    });
++    const location = res.headers.get('location');
++    if (res.status < 300 || res.status > 399 || !location) break;
++    if (hop >= MAX_REDIRECTS) throw new HttpError(`Too many redirects from ${target.host}`);
++    await res.body?.cancel();
++    try {
++      parsed = new URL(location, target);
++    } catch {
++      throw new HttpError(`Invalid redirect from ${target.host}`);
++    }
++  }
+   if (!res.ok) throw new HttpError(`HTTP ${res.status} from ${parsed.host}`, res.status);
+   const declared = Number(res.headers.get('content-length') ?? 0);
+   if (declared > maxBytes) throw new HttpError(`Response from ${parsed.host} is too large`);
+diff --git a/packages/core/src/rss/rss-service.test.ts b/packages/core/src/rss/rss-service.test.ts
+index 4060564..fda3fb2 100644
+--- a/packages/core/src/rss/rss-service.test.ts
++++ b/packages/core/src/rss/rss-service.test.ts
+@@ -134,7 +134,10 @@ describe('RssService', () => {
+     };
+     expect(core.rss.preview(input).map((a) => a.title)).toEqual(['Linux ISO 24.04']);
+     await core.rss.saveRule(input);
+-    expect(fetchTorrent).toHaveBeenCalledWith('https://example.org/linux.torrent');
++    // The link is on another host than the feed, so it may only reach public addresses.
++    expect(fetchTorrent).toHaveBeenCalledWith('https://example.org/linux.torrent', {
++      allowPrivate: false,
++    });
+     expect(core.torrents.list()).toMatchObject([{ name: 'FromUrl', status: 'paused' }]);
+     await expect(
+       core.rss.saveRule({ ...input, useRegex: true, mustContain: ['(oops'] }),
+diff --git a/packages/core/src/rss/rss-service.ts b/packages/core/src/rss/rss-service.ts
+index a3879f1..ef1bea7 100644
+--- a/packages/core/src/rss/rss-service.ts
++++ b/packages/core/src/rss/rss-service.ts
+@@ -34,7 +34,7 @@ export interface RssServiceDeps {
+   settings: () => Settings;
+   /** Injected for tests. */
+   fetchFeed?: (url: string) => Promise<string>;
+-  fetchTorrent?: (url: string) => Promise<Uint8Array>;
++  fetchTorrent?: (url: string, opts: { allowPrivate: boolean }) => Promise<Uint8Array>;
+ }
+ 
+ /** Feeds, articles, download rules and the background refresh scheduler. */
+@@ -232,7 +232,7 @@ export class RssService {
+     if (!article) throw new CoreError('not_found', 'Article not found');
+     if (!article.torrentURL)
+       throw new CoreError('invalid_input', 'This article has no torrent or magnet link');
+-    const res = await this.addTorrent(article.torrentURL, {});
++    const res = await this.addTorrent(article.torrentURL, {}, feedId);
+     this.repo.recordDownload({
+       ruleId: null,
+       ruleName: null,
+@@ -585,12 +585,16 @@ export class RssService {
+     let torrentId: string | null = null;
+     let error: string | null = null;
+     try {
+-      const res = await this.addTorrent(article.torrentURL, {
+-        category: rule.category,
+-        tags: rule.tags,
+-        savePath: rule.savePath,
+-        paused: rule.addPaused,
+-      });
++      const res = await this.addTorrent(
++        article.torrentURL,
++        {
++          category: rule.category,
++          tags: rule.tags,
++          savePath: rule.savePath,
++          paused: rule.addPaused,
++        },
++        feedId,
++      );
+       status = res.status;
+       torrentId = res.torrentId;
+     } catch (err) {
+@@ -620,11 +624,16 @@ export class RssService {
+   private async addTorrent(
+     url: string,
+     opts: AddOptions,
++    feedId: string,
+   ): Promise<{ torrentId: string | null; status: 'added' | 'duplicate' }> {
+     try {
+       if (MAGNET_RE.test(url))
+         return { torrentId: this.deps.torrents.addMagnet(url, opts).id, status: 'added' };
+-      const data = await (this.deps.fetchTorrent ?? defaultFetchTorrent)(url);
++      // The link comes from the feed's content: it may only reach the local network when it
++      // points at the feed's own (admin-chosen) host, e.g. Prowlarr's download links.
++      const feedUrl = this.repo.feed(feedId)?.url;
++      const allowPrivate = !!feedUrl && sameHost(feedUrl, url);
++      const data = await (this.deps.fetchTorrent ?? defaultFetchTorrent)(url, { allowPrivate });
+       const item = await this.deps.torrents.addTorrentFile(data, opts);
+       return { torrentId: item.id, status: 'added' };
+     } catch (err) {
+@@ -685,8 +694,21 @@ async function defaultFetchFeed(url: string): Promise<string> {
+   return Buffer.from(body).toString('utf8');
+ }
+ 
+-async function defaultFetchTorrent(url: string): Promise<Uint8Array> {
++/** Same scheme-less host (and port) for two URLs. */
++export function sameHost(a: string, b: string): boolean {
++  try {
++    return new URL(a).host.toLowerCase() === new URL(b).host.toLowerCase();
++  } catch {
++    return false;
++  }
++}
++
++async function defaultFetchTorrent(
++  url: string,
++  { allowPrivate }: { allowPrivate: boolean },
++): Promise<Uint8Array> {
+   const { body } = await fetchBytes(url, {
++    allowPrivate,
+     maxBytes: 10 * 1024 * 1024,
+     headers: { accept: 'application/x-bittorrent, */*' },
+   });
+diff --git a/packages/core/src/rss/rules.ts b/packages/core/src/rss/rules.ts
+index 5c3a66b..820e7bd 100644
+--- a/packages/core/src/rss/rules.ts
++++ b/packages/core/src/rss/rules.ts
+@@ -66,8 +66,10 @@ function entryMatches(entry: string, title: string, useRegex: boolean): boolean
+ /** Text conditions only (must contain / must not contain). */
+ export function matchesText(
+   rule: Pick<DownloadRule, 'mustContain' | 'mustNotContain' | 'useRegex'>,
+-  title: string,
++  fullTitle: string,
+ ): boolean {
++  // Feed titles are untrusted; bounding their length bounds backtracking in user regexes.
++  const title = fullTitle.slice(0, 1000);
+   const contain = rule.mustContain.map((s) => s.trim()).filter(Boolean);
+   const notContain = rule.mustNotContain.map((s) => s.trim()).filter(Boolean);
+   if (contain.length > 0 && !contain.some((e) => entryMatches(e, title, rule.useRegex)))
+diff --git a/packages/core/src/security.test.ts b/packages/core/src/security.test.ts
+new file mode 100644
+index 0000000..ae9d085
+--- /dev/null
++++ b/packages/core/src/security.test.ts
+@@ -0,0 +1,82 @@
++import { createServer } from 'node:http';
++import type { AddressInfo } from 'node:net';
++import { describe, expect, it } from 'vitest';
++import { fetchBytes, isPrivateAddress } from './net/http.ts';
++import { parseRelease } from './media/parse-title.ts';
++import { isUnsafeTorrentPath, parseTorrentFile } from './torrent/sources.ts';
++import { makeTorrentFile } from './testing/index.ts';
++
++describe('SSRF protection', () => {
++  it('classifies private and public addresses', () => {
++    for (const ip of [
++      '127.0.0.1',
++      '10.1.2.3',
++      '192.168.1.1',
++      '172.20.0.1',
++      '169.254.169.254',
++      '100.64.0.1',
++      '0.0.0.0',
++      '::1',
++      '::',
++      'fd00::1',
++      'fe80::1',
++      '::ffff:127.0.0.1',
++      '::ffff:10.0.0.1',
++    ])
++      expect(isPrivateAddress(ip), ip).toBe(true);
++    for (const ip of ['1.1.1.1', '104.16.0.1', '2606:4700::1111', '::ffff:8.8.8.8'])
++      expect(isPrivateAddress(ip), ip).toBe(false);
++  });
++
++  it('refuses private targets for untrusted links, and never redirects public → private', async () => {
++    const server = createServer((req, res) => {
++      if (req.url === '/redirect') {
++        res.writeHead(302, { location: 'http://127.0.0.1/secret' });
++        return res.end();
++      }
++      res.end('ok');
++    });
++    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
++    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
++    try {
++      await expect(fetchBytes(`${url}/x`, { allowPrivate: false })).rejects.toThrow(
++        /not a public address/,
++      );
++      // Admin-configured LAN services still work.
++      expect(Buffer.from((await fetchBytes(`${url}/x`)).body).toString()).toBe('ok');
++      await expect(fetchBytes('file:///etc/passwd')).rejects.toThrow(/Unsupported URL scheme/);
++    } finally {
++      server.close();
++    }
++  });
++});
++
++describe('torrent path traversal', () => {
++  it('flags paths that escape the save folder', () => {
++    for (const p of [
++      '../x',
++      'a/../../x',
++      '/etc/passwd',
++      'C:\\Windows\\x',
++      'ok/..\\..\\evil.exe',
++      '\\\\server\\share',
++    ])
++      expect(isUnsafeTorrentPath(p, true), p).toBe(true);
++    expect(isUnsafeTorrentPath('Show/Show: Part 1.mkv', false)).toBe(false);
++    expect(isUnsafeTorrentPath('Show/file:stream', true)).toBe(true);
++    expect(isUnsafeTorrentPath('Show/S01/e01.mkv', true)).toBe(false);
++  });
++
++  it('refuses .torrent files with backslash traversal', async () => {
++    await expect(
++      parseTorrentFile(makeTorrentFile('ok', [{ path: ['..\\..\\..\\evil.exe'], length: 1 }])),
++    ).rejects.toThrow(/outside its folder/);
++  });
++});
++
++it('parses hostile release names quickly', () => {
++  const t = Date.now();
++  parseRelease(`[${'a'.repeat(100_000)}] - ${'1 '.repeat(50_000)}`);
++  parseRelease('S01E'.repeat(50_000));
++  expect(Date.now() - t).toBeLessThan(500);
++});
+diff --git a/packages/core/src/torrent/sources.ts b/packages/core/src/torrent/sources.ts
+index 5d594da..fe88ea1 100644
+--- a/packages/core/src/torrent/sources.ts
++++ b/packages/core/src/torrent/sources.ts
+@@ -35,6 +35,18 @@ export function parseMagnet(uri: string): ParsedSource {
+   };
+ }
+ 
++/**
++ * A torrent file path that could escape the save folder: `..` segments, absolute or drive
++ * paths, or Windows separators/streams. parse-torrent resolves `..` between `/`-separated
++ * parts, but leaves backslashes alone, so `..\\..\\evil.exe` would reach outside the save
++ * folder on Windows (the classic .torrent path traversal, e.g. CVE-2010-0012).
++ */
++export function isUnsafeTorrentPath(p: string, windows = process.platform === 'win32'): boolean {
++  if (!p || p.includes('\0') || /^[\\/]/.test(p) || /^[A-Za-z]:/.test(p)) return true;
++  // ':' is an ordinary character on Linux/macOS but a drive or stream separator on Windows.
++  return p.split(/[\\/]/).some((seg) => seg === '..' || (windows && seg.includes(':')));
++}
++
+ /** Validates `.torrent` bytes and extracts metadata. */
+ export async function parseTorrentFile(
+   data: Uint8Array,
+@@ -48,6 +60,8 @@ export async function parseTorrentFile(
+   if (!parsed.info || !parsed.infoHash || !INFO_HASH_RE.test(parsed.infoHash)) {
+     throw new CoreError('invalid_input', 'Not a valid .torrent file (missing info dictionary)');
+   }
++  if ((parsed.files ?? []).some((f) => isUnsafeTorrentPath(f.path)))
++    throw new CoreError('invalid_input', 'This torrent has file paths outside its folder; refused');
+   return {
+     infoHash: parsed.infoHash,
+     name: parsed.name ?? null,
+diff --git a/packages/core/src/torrent/webtorrent-engine.ts b/packages/core/src/torrent/webtorrent-engine.ts
+index 5cfb09d..e5104ce 100644
+--- a/packages/core/src/torrent/webtorrent-engine.ts
++++ b/packages/core/src/torrent/webtorrent-engine.ts
+@@ -13,6 +13,7 @@ import type {
+ } from './engine.ts';
+ import { effectiveDhtPort, type Settings } from '../settings/settings.ts';
+ import { clientFromPeerId } from './peer-client.ts';
++import { isUnsafeTorrentPath } from './sources.ts';
+ 
+ type EngineSettings = Pick<
+   Settings,
+@@ -145,7 +146,16 @@ class WebTorrentHandle implements EngineTorrent {
+         this.hookTracker();
+       };
+     }
+-    torrent.on('metadata', () => this.emitter.emit('metadata'));
++    torrent.on('metadata', () => {
++      // Magnets get their file list from peers: refuse paths that escape the save folder
++      // before any piece can be written (pieces are only stored after download + hash check).
++      if (torrent.files.some((f) => isUnsafeTorrentPath(f.path))) {
++        torrent.destroy();
++        this.emitter.emit('error', new Error('Torrent has file paths outside its folder; refused'));
++        return;
++      }
++      this.emitter.emit('metadata');
++    });
+     torrent.on('ready', () => this.emitter.emit('ready'));
+     torrent.on('error', (err: Error | string) =>
+       this.emitter.emit('error', err instanceof Error ? err : new Error(String(err))),
+diff --git a/packages/core/src/watch/watch-folder.ts b/packages/core/src/watch/watch-folder.ts
+index 9ed6fad..aee3946 100644
+--- a/packages/core/src/watch/watch-folder.ts
++++ b/packages/core/src/watch/watch-folder.ts
+@@ -21,6 +21,8 @@ export interface WatchDeps {
+  * Polling rather than fs.watch, because bind mounts and network shares often don't deliver
+  * change events. Handled files move to `.added/`, unusable ones to `.failed/`.
+  */
++const MAX_FILE_BYTES = 16 * 1024 * 1024;
++
+ export class WatchFolder {
+   private timer: NodeJS.Timeout | null = null;
+   private running = false;
+@@ -59,6 +61,12 @@ export class WatchFolder {
+         try {
+           const st = await stat(path);
+           if (!st.isFile() || now - st.mtimeMs < SETTLE_MS) continue;
++          // Real .torrent/.magnet files are small; don't read a huge file into memory.
++          if (st.size > MAX_FILE_BYTES) {
++            await this.moveAside(dir, name, '.failed');
++            done.push(name);
++            continue;
++          }
+           const ok = await this.ingest(path, lower.endsWith('.magnet'));
+           await this.moveAside(dir, name, ok ? '.added' : '.failed');
+           done.push(name);
+-- 
+2.43.0
+

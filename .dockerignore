@@ -1,0 +1,10 @@
+**/node_modules
+**/dist
+release
+data
+downloads
+config
+watch
+.git
+test-results
+playwright-report

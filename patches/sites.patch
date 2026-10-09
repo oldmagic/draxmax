@@ -1,0 +1,5075 @@
+From f69cf481bd0c4a2dffee3d129e0302b4e027e838 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 9 Oct 2026 03:42:50 +0000
+Subject: [PATCH] Add Sites: tracker logins and search pages as missing-episode
+ sources
+
+A new "Sites" page (below RSS) stores tracker sites: URLs, login fields
+(passkey, rsskey, authkey, ...), session cookies and extra headers
+(encrypted, write-only), search URL templates with {query}, and the
+torrent-page / download link patterns (/torrent/{id}/,
+/download.php?id={id}&passkey={passkey}).
+
+- ~110 presets generated from the autobrr indexer definitions (site facts
+  only: names, URLs, login fields, link templates) by
+  scripts/gen-site-presets.mjs; SuperBits includes its search URLs.
+- Search responses are auto-detected: JSON APIs (result list and fields
+  found heuristically, or set by dot paths), HTML search pages (torrent
+  links found by the page-link pattern, seeders/size from the row) and
+  RSS/Torznab. "Test search" shows results, masked links and the mapping.
+- Enabled sites are searched by missing-episode checks; downloads use the
+  site's link with its cookies. RSS feeds and torrent links on a site's
+  host carry its cookies too.
+- Templates may only target the site's own hosts; cookies/headers are
+  dropped on cross-host redirects; secrets are masked in test output and
+  never returned by the API.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013nmSf2zmYoNEfzcNutPGUX
+---
+ README.md                                    |    6 +
+ apps/server/src/app.test.ts                  |   29 +
+ apps/server/src/app.ts                       |    3 +
+ apps/server/src/routes/sites.ts              |   29 +
+ apps/web/src/App.tsx                         |    2 +
+ apps/web/src/components/Shortcuts.tsx        |    1 +
+ apps/web/src/components/Sidebar.tsx          |    3 +-
+ apps/web/src/lib/api.ts                      |   13 +
+ apps/web/src/lib/shortcuts.ts                |    2 +-
+ apps/web/src/pages/Sites.tsx                 |  841 ++++++++
+ apps/web/src/stores/torrents.ts              |    3 +
+ package.json                                 |    2 +
+ packages/core/src/core.ts                    |   20 +-
+ packages/core/src/db/migrations.ts           |   18 +
+ packages/core/src/events.ts                  |    2 +
+ packages/core/src/index.ts                   |    1 +
+ packages/core/src/missing/missing-service.ts |   21 +-
+ packages/core/src/net/http.ts                |   20 +-
+ packages/core/src/rss/rss-service.test.ts    |    1 +
+ packages/core/src/rss/rss-service.ts         |   31 +-
+ packages/core/src/sites/parse.ts             |  311 +++
+ packages/core/src/sites/presets.json         | 2030 ++++++++++++++++++
+ packages/core/src/sites/site-service.ts      |  524 +++++
+ packages/core/src/sites/sites.test.ts        |  291 +++
+ packages/core/src/sites/templates.ts         |   77 +
+ packages/shared/src/api.ts                   |    3 +-
+ packages/shared/src/index.ts                 |    1 +
+ packages/shared/src/sites.ts                 |  103 +
+ pnpm-lock.yaml                               |   11 +
+ scripts/gen-site-presets.mjs                 |  111 +
+ 30 files changed, 4488 insertions(+), 22 deletions(-)
+ create mode 100644 apps/server/src/routes/sites.ts
+ create mode 100644 apps/web/src/pages/Sites.tsx
+ create mode 100644 packages/core/src/sites/parse.ts
+ create mode 100644 packages/core/src/sites/presets.json
+ create mode 100644 packages/core/src/sites/site-service.ts
+ create mode 100644 packages/core/src/sites/sites.test.ts
+ create mode 100644 packages/core/src/sites/templates.ts
+ create mode 100644 packages/shared/src/sites.ts
+ create mode 100644 scripts/gen-site-presets.mjs
+
+diff --git a/README.md b/README.md
+index a296cb2..29d07ae 100644
+--- a/README.md
++++ b/README.md
+@@ -130,6 +130,12 @@ Everything is configurable in **Settings**. Every value can also be set by an en
+   - It adds every released episode after the first one you have, so episodes you watched and deleted before that aren't fetched again.
+   - A batch is used only when every episode in it is missing. Releases with no seeders wait for the next check.
+   - **RSS → Missing episodes** shows the status for each show and has *Check all now*.
++- **Sites** (sidebar, `g` then `i`): tracker logins and search pages, used as extra search sources for missing episodes.
++  - **Add site** offers ~110 known trackers (SuperBits, IPTorrents, TorrentLeech, BTN, …), with their URLs, login fields and torrent/download link patterns filled in, or a custom site.
++  - Enter the passkey (and other login fields), the **session cookies** (paste the `Cookie` header from your browser), and optional extra headers. They're stored encrypted and never shown again.
++  - **Search URLs** take `{query}`, e.g. `/search?search={query}`. Several can be listed; they're tried in order. JSON APIs, HTML search pages (found by the torrent-page link pattern, e.g. `/torrent/{id}/`) and RSS/Torznab are detected automatically. **Test search** shows what was found, and JSON field names can be set under *Result reading*.
++  - Download links are built from the pattern, e.g. `/download.php?id={id}&passkey={passkey}`. A site's cookies are sent only to its own URLs, which also covers its RSS feeds.
++  - Site facts come from the [autobrr](https://github.com/autobrr/autobrr) indexer definitions; regenerate them with `node scripts/gen-site-presets.mjs`.
+ - **Upcoming:** "Already have" teaches the library, and "Ignore" hides an item; both can be undone. "Search & Add" opens your search site, or copies a ready-made query such as `The Expanse S05`.
+ - **Keyboard:** `?` lists every shortcut. `g` then `d`/`u`/`r`/`s`/`,` jumps between pages.
+ 
+diff --git a/apps/server/src/app.test.ts b/apps/server/src/app.test.ts
+index e1c70b7..82af978 100644
+--- a/apps/server/src/app.test.ts
++++ b/apps/server/src/app.test.ts
+@@ -556,4 +556,33 @@ describe('security', () => {
+     });
+     expect(removeRemote.statusCode).toBe(403);
+   });
++
++  it('serves sites without ever returning their credentials', async () => {
++    expect((await app.inject({ url: '/api/sites', ...REMOTE })).statusCode).toBe(401);
++    const created = await app.inject({
++      method: 'POST',
++      url: '/api/sites',
++      payload: {
++        name: 'SuperBits',
++        baseUrls: ['https://superbits.org/'],
++        searchUrls: ['/search?search={query}'],
++        infoUrl: '/torrent/{id}/',
++        downloadUrl: '/download.php?id={id}&passkey={passkey}',
++        fields: [{ name: 'passkey', label: 'Passkey' }],
++        values: { passkey: 'TOPSECRETKEY' },
++        cookies: 'sbid=COOKIEVALUE',
++      },
++    });
++    expect(created.statusCode).toBe(201);
++    expect(created.body).not.toMatch(/TOPSECRETKEY|COOKIEVALUE/);
++    const list = await app.inject('/api/sites');
++    expect(list.json()[0].secretsSet).toEqual({
++      values: { passkey: true },
++      cookies: 1,
++      headers: 0,
++    });
++    expect(list.body).not.toMatch(/TOPSECRETKEY|COOKIEVALUE/);
++    const presets = (await app.inject('/api/sites/presets')).json() as { id: string }[];
++    expect(presets.some((p) => p.id === 'superbits')).toBe(true);
++  });
+ });
+diff --git a/apps/server/src/app.ts b/apps/server/src/app.ts
+index 860313b..a837a51 100644
+--- a/apps/server/src/app.ts
++++ b/apps/server/src/app.ts
+@@ -12,6 +12,7 @@ import { fsRoutes } from './routes/fs.ts';
+ import { rssRoutes } from './routes/rss.ts';
+ import { mediaRoutes } from './routes/media.ts';
+ import { settingsRoutes, type IdentityOptions } from './routes/settings.ts';
++import { siteRoutes } from './routes/sites.ts';
+ import { torrentRoutes } from './routes/torrents.ts';
+ 
+ export interface ServerOptions {
+@@ -236,6 +237,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
+     core.events.on('stats:tick', (stats) => hub.broadcast({ type: 'stats:tick', stats })),
+     core.events.on('upcoming:updated', () => hub.broadcast({ type: 'upcoming:updated' })),
+     core.events.on('missing:updated', () => hub.broadcast({ type: 'missing:updated' })),
++    core.events.on('sites:updated', () => hub.broadcast({ type: 'sites:updated' })),
+   ];
+   const timer = setInterval(() => {
+     if (clients.size > 0) hub.broadcast(snapshot());
+@@ -262,6 +264,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
+   await app.register(rssRoutes, { core });
+   await app.register(mediaRoutes, { core });
+   await app.register(fsRoutes, { core });
++  await app.register(siteRoutes, { core });
+ 
+   app.all('/api/*', async (_req, reply) => reply.status(404).send({ error: 'Not found' }));
+ 
+diff --git a/apps/server/src/routes/sites.ts b/apps/server/src/routes/sites.ts
+new file mode 100644
+index 0000000..9e10463
+--- /dev/null
++++ b/apps/server/src/routes/sites.ts
+@@ -0,0 +1,29 @@
++import type { FastifyInstance } from 'fastify';
++import { z } from 'zod';
++import type { Core } from '@draxmax/core';
++import { siteSchema, siteTestSchema } from '@draxmax/shared';
++
++const idParams = z.object({ id: z.string().min(1).max(100) });
++
++/** Tracker sites (credentials are write-only: responses only say which are set). */
++export async function siteRoutes(app: FastifyInstance, { core }: { core: Core }): Promise<void> {
++  const sites = core.sites;
++  const id = (req: { params: unknown }) => idParams.parse(req.params).id;
++
++  app.get('/api/sites', async () => sites.list());
++  app.get('/api/sites/presets', async () => sites.presets());
++  app.post('/api/sites', async (req, reply) =>
++    reply.status(201).send(sites.saveSite(siteSchema.parse(req.body))),
++  );
++  app.put('/api/sites/:id', async (req) => sites.saveSite(siteSchema.parse(req.body), id(req)));
++  app.patch('/api/sites/:id', async (req) =>
++    sites.setEnabled(id(req), z.object({ enabled: z.boolean() }).parse(req.body).enabled),
++  );
++  app.delete('/api/sites/:id', async (req, reply) => {
++    sites.delete(id(req));
++    return reply.status(204).send();
++  });
++  app.post('/api/sites/:id/test', async (req) =>
++    sites.test(id(req), siteTestSchema.parse(req.body).query),
++  );
++}
+diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx
+index 6c03d6f..0436369 100644
+--- a/apps/web/src/App.tsx
++++ b/apps/web/src/App.tsx
+@@ -16,6 +16,7 @@ import { useSystemThemeSync, useTheme } from '@/lib/theme';
+ import { AuthScreen } from '@/pages/Auth';
+ import { DownloadsPage } from '@/pages/Downloads';
+ import { RssPage } from '@/pages/Rss';
++import { SitesPage } from '@/pages/Sites';
+ import { SettingsPage } from '@/pages/Settings';
+ import { StatsPage } from '@/pages/Stats';
+ import { UpcomingPage } from '@/pages/Upcoming';
+@@ -90,6 +91,7 @@ function Shell() {
+                   <Route path="/downloads" component={DownloadsPage} />
+                   <Route path="/upcoming" component={UpcomingPage} />
+                   <Route path="/rss" component={RssPage} />
++                  <Route path="/sites" component={SitesPage} />
+                   <Route path="/stats" component={StatsPage} />
+                   <Route path="/settings" component={SettingsPage} />
+                   <Route>
+diff --git a/apps/web/src/components/Shortcuts.tsx b/apps/web/src/components/Shortcuts.tsx
+index d2e693c..24d1371 100644
+--- a/apps/web/src/components/Shortcuts.tsx
++++ b/apps/web/src/components/Shortcuts.tsx
+@@ -8,6 +8,7 @@ const GO: Record<string, string> = {
+   d: '/downloads',
+   u: '/upcoming',
+   r: '/rss',
++  i: '/sites',
+   s: '/stats',
+   ',': '/settings',
+ };
+diff --git a/apps/web/src/components/Sidebar.tsx b/apps/web/src/components/Sidebar.tsx
+index 470b91b..a132858 100644
+--- a/apps/web/src/components/Sidebar.tsx
++++ b/apps/web/src/components/Sidebar.tsx
+@@ -1,4 +1,4 @@
+-import { Activity, CalendarClock, Download, Rss, Settings } from 'lucide-react';
++import { Activity, CalendarClock, Download, Globe, Rss, Settings } from 'lucide-react';
+ import { motion } from 'motion/react';
+ import { Link, useLocation } from 'wouter';
+ import { cn } from '@/lib/utils';
+@@ -9,6 +9,7 @@ const NAV = [
+   { href: '/downloads', label: 'Downloads', icon: Download },
+   { href: '/upcoming', label: 'Upcoming', icon: CalendarClock },
+   { href: '/rss', label: 'RSS', icon: Rss },
++  { href: '/sites', label: 'Sites', icon: Globe },
+   { href: '/stats', label: 'Stats', icon: Activity },
+   { href: '/settings', label: 'Settings', icon: Settings },
+ ] as const;
+diff --git a/apps/web/src/lib/api.ts b/apps/web/src/lib/api.ts
+index 3d5bd36..7fe5515 100644
+--- a/apps/web/src/lib/api.ts
++++ b/apps/web/src/lib/api.ts
+@@ -15,6 +15,10 @@ import type {
+   StatsSnapshot,
+   UpcomingResponse,
+   MissingResponse,
++  SiteDTO,
++  SiteInput,
++  SitePresetDTO,
++  SiteTestResult,
+   LibraryEntryDTO,
+   AddMagnetRequest,
+   AddTorrentFileRequest,
+@@ -193,6 +197,15 @@ export const api = {
+   setRuleFeeds: (body: Partial<RuleFeedsRequest> & { ids: string[] }) =>
+     request<RuleFeedsResult>('POST', '/api/rss/rules/feeds', body),
+   previewRule: (r: RuleInput) => request<ArticleDTO[]>('POST', '/api/rss/rules/preview', r),
++  sites: () => request<SiteDTO[]>('GET', '/api/sites'),
++  sitePresets: () => request<SitePresetDTO[]>('GET', '/api/sites/presets'),
++  createSite: (s: SiteInput) => request<SiteDTO>('POST', '/api/sites', s),
++  updateSite: (id: string, s: SiteInput) => request<SiteDTO>('PUT', `/api/sites/${id}`, s),
++  setSiteEnabled: (id: string, enabled: boolean) =>
++    request<SiteDTO>('PATCH', `/api/sites/${id}`, { enabled }),
++  deleteSite: (id: string) => request<undefined>('DELETE', `/api/sites/${id}`),
++  testSite: (id: string, query: string) =>
++    request<SiteTestResult>('POST', `/api/sites/${id}/test`, { query }),
+   missing: () => request<MissingResponse>('GET', '/api/missing'),
+   checkMissing: (ruleIds?: string[]) =>
+     request<MissingResponse>('POST', '/api/missing/check', ruleIds ? { ruleIds } : {}),
+diff --git a/apps/web/src/lib/shortcuts.ts b/apps/web/src/lib/shortcuts.ts
+index 7f10c45..4d9d673 100644
+--- a/apps/web/src/lib/shortcuts.ts
++++ b/apps/web/src/lib/shortcuts.ts
+@@ -7,6 +7,6 @@ export const SHORTCUTS: [string, string][] = [
+   ['Delete', 'Remove selected torrents'],
+   ['Esc', 'Clear selection'],
+   ['N', 'Add torrents'],
+-  ['G then D / U / R / S / ,', 'Go to Downloads / Upcoming / RSS / Stats / Settings'],
++  ['G then D / U / R / I / S / ,', 'Go to Downloads / Upcoming / RSS / Sites / Stats / Settings'],
+   ['?', 'Show keyboard shortcuts'],
+ ];
+diff --git a/apps/web/src/pages/Sites.tsx b/apps/web/src/pages/Sites.tsx
+new file mode 100644
+index 0000000..ff5397f
+--- /dev/null
++++ b/apps/web/src/pages/Sites.tsx
+@@ -0,0 +1,841 @@
++import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
++import {
++  AlertTriangle,
++  CheckCircle2,
++  FlaskConical,
++  Globe,
++  KeyRound,
++  Loader2,
++  Plus,
++  Search,
++  Trash2,
++} from 'lucide-react';
++import { useMemo, useRef, useState, type ReactNode } from 'react';
++import { toast } from 'sonner';
++import type {
++  SiteDTO,
++  SiteField,
++  SiteInput,
++  SiteMapping,
++  SitePresetDTO,
++  SiteTestResult,
++} from '@draxmax/shared';
++import { Badge } from '@/components/ui/badge';
++import { Button } from '@/components/ui/button';
++import { Dialog, DialogContent } from '@/components/ui/dialog';
++import { Input, Textarea } from '@/components/ui/input';
++import { Switch } from '@/components/ui/switch';
++import { api } from '@/lib/api';
++import { formatBytes } from '@/lib/format';
++import { cn } from '@/lib/utils';
++
++/** Editable copy of a site. Secrets hold only changes: undefined = keep, null = clear. */
++interface Draft {
++  name: string;
++  preset: string | null;
++  enabled: boolean;
++  baseUrls: string;
++  searchUrls: string;
++  infoUrl: string;
++  downloadUrl: string;
++  mapping: SiteMapping;
++  fields: SiteField[];
++  values: Record<string, string | null>;
++  cookies?: string | null;
++  headers?: string | null;
++}
++
++const lines = (s: string) =>
++  s
++    .split('\n')
++    .map((l) => l.trim())
++    .filter(Boolean);
++
++function fromSite(s: SiteDTO): Draft {
++  return {
++    name: s.name,
++    preset: s.preset,
++    enabled: s.enabled,
++    baseUrls: s.baseUrls.join('\n'),
++    searchUrls: s.searchUrls.join('\n'),
++    infoUrl: s.infoUrl,
++    downloadUrl: s.downloadUrl,
++    mapping: s.mapping,
++    fields: s.fields,
++    values: {},
++  };
++}
++
++function fromPreset(p: SitePresetDTO | null): Draft {
++  return {
++    name: p?.name ?? '',
++    preset: p?.id ?? null,
++    enabled: true,
++    baseUrls: p ? (p.urls[0] ?? '') : '',
++    searchUrls: (p?.searchUrls ?? []).join('\n'),
++    infoUrl: p?.infoUrl ?? '',
++    downloadUrl: p?.downloadUrl ?? '',
++    mapping: { format: 'auto' },
++    fields: p?.fields.map(({ name, label, help }) => ({
++      name,
++      label,
++      ...(help ? { help } : {}),
++    })) ?? [{ name: 'passkey', label: 'Passkey' }],
++    values: {},
++  };
++}
++
++function toInput(d: Draft): SiteInput {
++  // An opened-but-empty secret box means "keep", not "clear" (Remove sends null).
++  const values = Object.fromEntries(Object.entries(d.values).filter(([, v]) => v !== ''));
++  const keep = (v: string | null | undefined) => (v === '' ? undefined : v);
++  const cookies = keep(d.cookies);
++  const headers = keep(d.headers);
++  return {
++    name: d.name.trim(),
++    preset: d.preset,
++    enabled: d.enabled,
++    baseUrls: lines(d.baseUrls),
++    searchUrls: lines(d.searchUrls),
++    infoUrl: d.infoUrl.trim(),
++    downloadUrl: d.downloadUrl.trim(),
++    mapping: d.mapping,
++    fields: d.fields,
++    ...(Object.keys(values).length ? { values } : {}),
++    ...(cookies !== undefined ? { cookies } : {}),
++    ...(headers !== undefined ? { headers } : {}),
++  };
++}
++
++export function SitesPage() {
++  const { data: sites = [] } = useQuery({ queryKey: ['sites'], queryFn: api.sites });
++  const [chosen, setChosen] = useState<string | null>(null);
++  const [newDraft, setNewDraft] = useState<Draft | null>(null);
++  const [picking, setPicking] = useState(false);
++  const selected = newDraft ? null : (sites.find((s) => s.id === chosen) ?? sites[0] ?? null);
++
++  return (
++    <div className="flex h-full flex-col">
++      <header className="flex flex-wrap items-end justify-between gap-4 pb-4">
++        <div>
++          <h1 className="text-2xl font-semibold tracking-tight">Sites</h1>
++          <p className="mt-1 text-sm text-muted">
++            Tracker logins and search pages. Enabled sites are searched for missing episodes, and
++            their cookies are sent with RSS feeds and downloads on the same site.
++          </p>
++        </div>
++        <Button variant="primary" onClick={() => setPicking(true)}>
++          <Plus /> Add site
++        </Button>
++      </header>
++
++      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[18rem_minmax(0,1fr)]">
++        <aside className="glass flex min-h-0 flex-col rounded-2xl p-2">
++          <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto" aria-label="Sites">
++            {sites.map((s) => (
++              <SiteItem
++                key={s.id}
++                site={s}
++                active={!newDraft && selected?.id === s.id}
++                onSelect={() => {
++                  setNewDraft(null);
++                  setChosen(s.id);
++                }}
++              />
++            ))}
++            {newDraft && (
++              <li className="rounded-xl bg-surface-hover px-3 py-2 text-sm">
++                {newDraft.name || 'New site'} <span className="text-xs text-muted">(unsaved)</span>
++              </li>
++            )}
++          </ul>
++          {sites.length === 0 && !newDraft && (
++            <div className="p-4 text-center text-sm text-muted">
++              <Globe className="mx-auto mb-2 size-6" />
++              No sites yet.
++              <Button size="sm" variant="primary" className="mt-3" onClick={() => setPicking(true)}>
++                <Plus /> Add a site
++              </Button>
++            </div>
++          )}
++        </aside>
++        <section className="glass min-h-0 overflow-y-auto rounded-2xl p-5">
++          {newDraft ? (
++            <SiteEditor
++              key="new"
++              site={null}
++              initial={newDraft}
++              onSaved={(s) => {
++                setNewDraft(null);
++                setChosen(s.id);
++              }}
++              onCancel={() => setNewDraft(null)}
++            />
++          ) : selected ? (
++            <SiteEditor
++              key={selected.id}
++              site={selected}
++              initial={fromSite(selected)}
++              onSaved={(s) => setChosen(s.id)}
++              onCancel={() => setChosen(null)}
++            />
++          ) : (
++            <p className="p-10 text-center text-sm text-muted">Add a site to get started.</p>
++          )}
++        </section>
++      </div>
++
++      <PresetPicker
++        open={picking}
++        onClose={() => setPicking(false)}
++        onPick={(p) => {
++          setNewDraft(fromPreset(p));
++          setPicking(false);
++        }}
++      />
++    </div>
++  );
++}
++
++function SiteItem({
++  site,
++  active,
++  onSelect,
++}: {
++  site: SiteDTO;
++  active: boolean;
++  onSelect(): void;
++}) {
++  const qc = useQueryClient();
++  const toggle = useMutation({
++    mutationFn: () => api.setSiteEnabled(site.id, !site.enabled),
++    onSettled: () => void qc.invalidateQueries({ queryKey: ['sites'] }),
++  });
++  const test = site.lastTest;
++  return (
++    <li
++      className={cn(
++        'flex items-center rounded-xl transition-colors',
++        active ? 'bg-surface-hover text-fg' : 'text-muted hover:bg-surface-hover hover:text-fg',
++      )}
++    >
++      <button type="button" onClick={onSelect} className="min-w-0 flex-1 px-3 py-2 text-left">
++        <span className={cn('block truncate text-sm', !site.enabled && 'opacity-60')}>
++          {site.name}
++        </span>
++        <span className="flex items-center gap-1 text-xs text-muted">
++          {test ? (
++            test.ok ? (
++              <>
++                <CheckCircle2 className="size-3 text-success" /> {test.total} results in last test
++              </>
++            ) : (
++              <>
++                <AlertTriangle className="size-3 text-warning" /> Last test failed
++              </>
++            )
++          ) : (
++            'Not tested'
++          )}
++        </span>
++      </button>
++      <Switch
++        size="sm"
++        label={`Enable ${site.name}`}
++        checked={site.enabled}
++        onChange={() => toggle.mutate()}
++        className="mr-3"
++      />
++    </li>
++  );
++}
++
++function PresetPicker({
++  open,
++  onClose,
++  onPick,
++}: {
++  open: boolean;
++  onClose(): void;
++  onPick(p: SitePresetDTO | null): void;
++}) {
++  const { data: presets = [] } = useQuery({
++    queryKey: ['sites', 'presets'],
++    queryFn: api.sitePresets,
++    staleTime: Infinity,
++    enabled: open,
++  });
++  const [q, setQ] = useState('');
++  const shown = useMemo(() => {
++    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
++    return presets.filter((p) =>
++      words.every((w) => `${p.name} ${p.urls.join(' ')}`.toLowerCase().includes(w)),
++    );
++  }, [presets, q]);
++  return (
++    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
++      <DialogContent
++        title="Add a site"
++        description="Pick a known site to fill in its links and credential fields, or start from scratch."
++        className="w-[min(94vw,36rem)]"
++      >
++        <div className="relative mb-3">
++          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted" />
++          <Input
++            autoFocus
++            value={q}
++            onChange={(e) => setQ(e.target.value)}
++            placeholder="Search sites, e.g. SuperBits"
++            aria-label="Search sites"
++            className="h-10 pl-9"
++          />
++        </div>
++        <ul className="max-h-80 space-y-0.5 overflow-y-auto rounded-xl bg-surface-2 p-1">
++          <li>
++            <button
++              type="button"
++              onClick={() => onPick(null)}
++              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-surface-hover"
++            >
++              <Plus className="size-4 text-accent" /> Custom site
++              <span className="text-xs text-muted">enter everything yourself</span>
++            </button>
++          </li>
++          {shown.map((p) => (
++            <li key={p.id}>
++              <button
++                type="button"
++                onClick={() => onPick(p)}
++                className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left hover:bg-surface-hover"
++              >
++                <span className="min-w-0">
++                  <span className="block truncate text-sm">{p.name}</span>
++                  <span className="block truncate font-mono text-[11px] text-muted">
++                    {p.urls[0]}
++                  </span>
++                </span>
++                <span className="flex shrink-0 gap-1">
++                  {p.searchUrls.length > 0 && <Badge tone="success">search</Badge>}
++                  <Badge tone="muted">{p.privacy}</Badge>
++                </span>
++              </button>
++            </li>
++          ))}
++          {presets.length > 0 && shown.length === 0 && (
++            <li className="p-6 text-center text-sm text-muted">
++              Not in the list: use Custom site.
++            </li>
++          )}
++        </ul>
++        <p className="mt-3 text-xs text-muted">
++          Site details come from the autobrr indexer definitions. Most only describe links, so add
++          the site&apos;s search page yourself if it isn&apos;t filled in.
++        </p>
++      </DialogContent>
++    </Dialog>
++  );
++}
++
++function Field({
++  label,
++  hint,
++  children,
++}: {
++  label: string;
++  hint?: ReactNode;
++  children: ReactNode;
++}) {
++  return (
++    <label className="block space-y-1.5">
++      <span className="text-sm font-medium">{label}</span>
++      {children}
++      {hint && <span className="block text-xs text-muted">{hint}</span>}
++    </label>
++  );
++}
++
++/** Write-only secret: shows whether it's saved; typing replaces it, Remove clears it. */
++function SecretBox({
++  label,
++  hint,
++  saved,
++  change,
++  onChange,
++  multiline,
++  placeholder,
++}: {
++  label: string;
++  hint?: ReactNode;
++  /** Text describing the stored value ("saved", "2 cookies"), or null when nothing is stored. */
++  saved: string | null;
++  /** Pending change: undefined = keep, null = clear, string = new value. */
++  change: string | null | undefined;
++  onChange(v: string | null | undefined): void;
++  multiline?: boolean;
++  placeholder?: string;
++}) {
++  const editing = change !== undefined && change !== null;
++  const showSaved = saved && change === undefined;
++  return (
++    <div className="space-y-1.5">
++      <span className="text-sm font-medium">{label}</span>
++      {showSaved ? (
++        <div className="flex items-center gap-2">
++          <span className="flex h-9 flex-1 items-center gap-2 rounded-xl border bg-surface-2 px-3 text-sm text-muted">
++            <KeyRound className="size-4" /> {saved} (encrypted)
++          </span>
++          <Button size="sm" className="h-9" onClick={() => onChange('')}>
++            Change
++          </Button>
++          <Button size="sm" variant="ghost" className="h-9" onClick={() => onChange(null)}>
++            Remove
++          </Button>
++        </div>
++      ) : change === null ? (
++        <div className="flex items-center gap-2 text-sm text-muted">
++          Will be removed on save.
++          <Button size="sm" variant="ghost" onClick={() => onChange(undefined)}>
++            Undo
++          </Button>
++        </div>
++      ) : multiline ? (
++        <Textarea
++          aria-label={label}
++          value={editing ? change : ''}
++          onChange={(e) => onChange(e.target.value)}
++          placeholder={placeholder}
++          spellCheck={false}
++          autoComplete="off"
++          className="min-h-20 font-mono text-xs"
++        />
++      ) : (
++        <Input
++          type="password"
++          aria-label={label}
++          value={editing ? change : ''}
++          onChange={(e) => onChange(e.target.value)}
++          placeholder={placeholder}
++          autoComplete="off"
++          className="h-9 font-mono text-xs"
++        />
++      )}
++      {hint && <span className="block text-xs text-muted">{hint}</span>}
++    </div>
++  );
++}
++
++function SiteEditor({
++  site,
++  initial,
++  onSaved,
++  onCancel,
++}: {
++  site: SiteDTO | null;
++  initial: Draft;
++  onSaved(s: SiteDTO): void;
++  onCancel(): void;
++}) {
++  const qc = useQueryClient();
++  const [d, setD] = useState<Draft>(initial);
++  const [query, setQuery] = useState('');
++  const [result, setResult] = useState<SiteTestResult | null>(site?.lastTest ?? null);
++  const resultRef = useRef<HTMLDivElement>(null);
++  const set = (patch: Partial<Draft>) => setD((x) => ({ ...x, ...patch }));
++  const dirty = JSON.stringify(d) !== JSON.stringify(initial);
++
++  const save = useMutation({
++    mutationFn: (draft: Draft) =>
++      site ? api.updateSite(site.id, toInput(draft)) : api.createSite(toInput(draft)),
++    onSuccess: (s) => {
++      void qc.invalidateQueries({ queryKey: ['sites'] });
++      onSaved(s);
++    },
++    onError: (e) => toast.error(e.message),
++  });
++  const remove = useMutation({
++    mutationFn: () => api.deleteSite(site!.id),
++    onSuccess: () => {
++      toast.success(`${d.name} removed`);
++      void qc.invalidateQueries({ queryKey: ['sites'] });
++      onCancel();
++    },
++  });
++  const test = useMutation({
++    mutationFn: async () => {
++      // Test what's on screen: save pending edits first.
++      const saved = !site || dirty ? await save.mutateAsync(d) : site;
++      return api.testSite(saved.id, query.trim());
++    },
++    onSuccess: (r) => {
++      setResult(r);
++      void qc.invalidateQueries({ queryKey: ['sites'] });
++      // The results sit at the bottom of a long form: bring them into view.
++      requestAnimationFrame(() =>
++        resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
++      );
++    },
++    onError: (e) => toast.error(e.message),
++  });
++
++  return (
++    <form
++      className="mx-auto max-w-3xl space-y-6"
++      onSubmit={(e) => {
++        e.preventDefault();
++        save.mutate(d);
++      }}
++    >
++      <div className="flex flex-wrap items-center justify-between gap-3">
++        <h2 className="text-lg font-semibold">{site ? site.name : 'New site'}</h2>
++        <div className="flex items-center gap-3">
++          <span className="flex items-center gap-2 text-sm">
++            Enabled{' '}
++            <Switch label="Enabled" checked={d.enabled} onChange={(v) => set({ enabled: v })} />
++          </span>
++          {site && (
++            <Button
++              size="sm"
++              variant="ghost"
++              className="text-danger"
++              onClick={() => confirm(`Remove ${site.name} and its saved keys?`) && remove.mutate()}
++            >
++              <Trash2 /> Remove
++            </Button>
++          )}
++        </div>
++      </div>
++
++      <Section title="Site">
++        <div className="grid gap-4 sm:grid-cols-2">
++          <Field label="Name">
++            <Input required value={d.name} onChange={(e) => set({ name: e.target.value })} />
++          </Field>
++          <Field
++            label="Site URL"
++            hint="One per line; mirrors are allowed. Links may only point here."
++          >
++            <Textarea
++              required
++              value={d.baseUrls}
++              onChange={(e) => set({ baseUrls: e.target.value })}
++              spellCheck={false}
++              className="min-h-10 font-mono text-xs"
++              placeholder="https://superbits.org/"
++            />
++          </Field>
++        </div>
++      </Section>
++
++      <Section title="Login" icon={<KeyRound className="size-4 text-muted" />}>
++        {d.fields.map((f) => (
++          <SecretBox
++            key={f.name}
++            label={f.label}
++            hint={f.help ?? `Used as {${f.name}} in links.`}
++            saved={site?.secretsSet.values[f.name] ? 'Saved' : null}
++            change={d.values[f.name]}
++            onChange={(v) => {
++              const values = Object.fromEntries(
++                Object.entries(d.values).filter(([k]) => k !== f.name),
++              );
++              set({ values: v === undefined ? values : { ...values, [f.name]: v } });
++            }}
++          />
++        ))}
++        <AddField
++          existing={d.fields.map((f) => f.name)}
++          onAdd={(f) => set({ fields: [...d.fields, f] })}
++        />
++        <SecretBox
++          label="Session cookies"
++          hint="Paste the Cookie header from your browser while logged in, or one name=value per line. Needed for search pages that require a login."
++          saved={
++            site?.secretsSet.cookies
++              ? `${site.secretsSet.cookies} ${site.secretsSet.cookies === 1 ? 'cookie' : 'cookies'} saved`
++              : null
++          }
++          change={d.cookies}
++          onChange={(v) => set({ cookies: v })}
++          multiline
++          placeholder={'uid=12345; pass=abcdef…'}
++        />
++        <SecretBox
++          label="Extra headers"
++          hint="Optional, one per line, e.g. Authorization: Bearer <api key>."
++          saved={
++            site?.secretsSet.headers
++              ? `${site.secretsSet.headers} ${site.secretsSet.headers === 1 ? 'header' : 'headers'} saved`
++              : null
++          }
++          change={d.headers}
++          onChange={(v) => set({ headers: v })}
++          multiline
++          placeholder="Authorization: Bearer …"
++        />
++      </Section>
++
++      <Section title="Search and links">
++        <Field
++          label="Search URLs"
++          hint={
++            <>
++              One per line, with <code>{'{query}'}</code> where the search text goes. They&apos;re
++              tried in order until one finds results. Paths may be relative to the site URL.
++            </>
++          }
++        >
++          <Textarea
++            value={d.searchUrls}
++            onChange={(e) => set({ searchUrls: e.target.value })}
++            spellCheck={false}
++            className="min-h-20 font-mono text-xs"
++            placeholder={'/search?search={query}\n/api/v1/torrents?searchText={query}&page=search'}
++          />
++        </Field>
++        <div className="grid gap-4 sm:grid-cols-2">
++          <Field
++            label="Torrent page link"
++            hint="How a torrent's page link looks; {id} marks the torrent id."
++          >
++            <Input
++              value={d.infoUrl}
++              onChange={(e) => set({ infoUrl: e.target.value })}
++              className="font-mono text-xs"
++              placeholder="/torrent/{id}/"
++            />
++          </Field>
++          <Field label="Download link" hint="{id} and login fields like {passkey} are filled in.">
++            <Input
++              value={d.downloadUrl}
++              onChange={(e) => set({ downloadUrl: e.target.value })}
++              className="font-mono text-xs"
++              placeholder="/download.php?id={id}&passkey={passkey}"
++            />
++          </Field>
++        </div>
++        <details className="rounded-xl border p-3">
++          <summary className="cursor-pointer text-sm font-medium">
++            Result reading (advanced)
++          </summary>
++          <p className="mt-2 text-xs text-muted">
++            Normally detected automatically. For JSON APIs you can name the fields (dot paths like{' '}
++            <code>data.torrents</code>).
++          </p>
++          <div className="mt-3 grid gap-3 sm:grid-cols-4">
++            <Field label="Format">
++              <select
++                value={d.mapping.format ?? 'auto'}
++                onChange={(e) =>
++                  set({
++                    mapping: { ...d.mapping, format: e.target.value as SiteMapping['format'] },
++                  })
++                }
++                className="h-9 w-full rounded-xl border bg-surface-2 px-2 text-sm"
++              >
++                <option value="auto">Auto</option>
++                <option value="json">JSON</option>
++                <option value="html">HTML page</option>
++                <option value="rss">RSS / Torznab</option>
++              </select>
++            </Field>
++            {(['list', 'title', 'id', 'seeders', 'size', 'download', 'groupId'] as const).map(
++              (k) => (
++                <Field
++                  key={k}
++                  label={
++                    k === 'list'
++                      ? 'Result list'
++                      : k === 'groupId'
++                        ? 'Group id'
++                        : k[0]!.toUpperCase() + k.slice(1)
++                  }
++                >
++                  <Input
++                    value={d.mapping[k] ?? ''}
++                    onChange={(e) => {
++                      const value = e.target.value.trim();
++                      set({ mapping: { ...d.mapping, [k]: value || undefined } });
++                    }}
++                    placeholder="auto"
++                    className="h-9 font-mono text-xs"
++                  />
++                </Field>
++              ),
++            )}
++          </div>
++        </details>
++      </Section>
++
++      <div className="flex justify-end gap-2 border-t pt-4">
++        {!site && (
++          <Button variant="ghost" onClick={onCancel}>
++            Cancel
++          </Button>
++        )}
++        <Button type="submit" variant="primary" disabled={save.isPending || (!!site && !dirty)}>
++          {save.isPending && <Loader2 className="animate-spin" />}
++          {site ? 'Save' : 'Add site'}
++        </Button>
++      </div>
++
++      <Section title="Test search" icon={<FlaskConical className="size-4 text-muted" />}>
++        <div className="flex gap-2">
++          <Input
++            value={query}
++            onChange={(e) => setQuery(e.target.value)}
++            onKeyDown={(e) => {
++              if (e.key === 'Enter') {
++                e.preventDefault();
++                if (query.trim()) test.mutate();
++              }
++            }}
++            placeholder="Something the site has, e.g. Frieren"
++            aria-label="Test search text"
++          />
++          <Button
++            disabled={
++              !query.trim() || test.isPending || !d.name.trim() || !lines(d.baseUrls).length
++            }
++            onClick={() => test.mutate()}
++          >
++            {test.isPending ? <Loader2 className="animate-spin" /> : <Search />} Test
++          </Button>
++        </div>
++        {dirty && <p className="text-xs text-muted">Testing saves your changes first.</p>}
++        {result && (
++          <div ref={resultRef} className="scroll-mt-4">
++            <TestResultView
++              result={result}
++              onUseMapping={
++                result.mapping && result.format === 'json'
++                  ? () => save.mutate({ ...d, mapping: result.mapping! })
++                  : undefined
++              }
++            />
++          </div>
++        )}
++      </Section>
++    </form>
++  );
++}
++
++function AddField({ existing, onAdd }: { existing: string[]; onAdd(f: SiteField): void }) {
++  const [name, setName] = useState('');
++  const valid = /^[A-Za-z0-9_]{1,64}$/.test(name) && !existing.includes(name);
++  return (
++    <details className="text-sm">
++      <summary className="cursor-pointer text-xs text-muted">
++        Add another login field (rsskey, authkey, …)
++      </summary>
++      <div className="mt-2 flex gap-2">
++        <Input
++          value={name}
++          onChange={(e) => setName(e.target.value.trim())}
++          placeholder="Field name, e.g. rsskey"
++          className="h-9 max-w-xs font-mono text-xs"
++          aria-label="New field name"
++        />
++        <Button
++          size="sm"
++          className="h-9"
++          disabled={!valid}
++          onClick={() => {
++            onAdd({ name, label: name });
++            setName('');
++          }}
++        >
++          <Plus /> Add
++        </Button>
++      </div>
++    </details>
++  );
++}
++
++function TestResultView({
++  result,
++  onUseMapping,
++}: {
++  result: SiteTestResult;
++  onUseMapping?: () => void;
++}) {
++  return (
++    <div className="space-y-3 rounded-xl border p-3">
++      <div className="flex flex-wrap items-center gap-2 text-sm">
++        <Badge tone={result.ok ? 'success' : 'danger'}>{result.ok ? 'Works' : 'Failed'}</Badge>
++        {result.format && <Badge tone="muted">{result.format.toUpperCase()}</Badge>}
++        {result.status !== null && <span className="text-xs text-muted">HTTP {result.status}</span>}
++        <span className="text-xs text-muted">
++          {result.total} results · {new Date(result.at).toLocaleString()}
++        </span>
++        {onUseMapping && (
++          <Button size="sm" variant="ghost" className="ml-auto" onClick={onUseMapping}>
++            Use these field mappings
++          </Button>
++        )}
++      </div>
++      <p className="break-all font-mono text-[11px] text-muted">{result.url}</p>
++      {result.error && (
++        <p className="flex items-start gap-2 text-sm text-warning">
++          <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {result.error}
++        </p>
++      )}
++      {result.mapping && result.format === 'json' && (
++        <p className="font-mono text-[11px] text-muted">
++          {Object.entries(result.mapping)
++            .filter(([k]) => k !== 'format')
++            .map(([k, v]) => `${k}: ${v || '(top level)'}`)
++            .join(' · ')}
++        </p>
++      )}
++      {result.results.length > 0 && (
++        <ul className="max-h-72 divide-y divide-border/60 overflow-y-auto rounded-lg bg-surface-2 text-sm">
++          {result.results.map((h, i) => (
++            <li key={`${h.id}-${i}`} className="px-3 py-2">
++              <div className="truncate" title={h.title}>
++                {h.title}
++              </div>
++              <div className="flex flex-wrap gap-x-3 text-xs text-muted">
++                {h.id && <span>id {h.id}</span>}
++                {h.seeders !== null && <span>{h.seeders} seeders</span>}
++                {h.size !== null && <span>{formatBytes(h.size)}</span>}
++                <span className="truncate font-mono text-[11px]" title={h.downloadUrl ?? ''}>
++                  {h.downloadUrl ?? 'no download link'}
++                </span>
++              </div>
++            </li>
++          ))}
++        </ul>
++      )}
++      {result.excerpt && (
++        <details>
++          <summary className="cursor-pointer text-xs text-muted">
++            Response start (keys hidden)
++          </summary>
++          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-surface-2 p-2 text-[11px]">
++            {result.excerpt}
++          </pre>
++        </details>
++      )}
++    </div>
++  );
++}
++
++function Section({
++  title,
++  icon,
++  children,
++}: {
++  title: string;
++  icon?: ReactNode;
++  children: ReactNode;
++}) {
++  return (
++    <section className="space-y-4">
++      <h3 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
++        {icon}
++        {title}
++      </h3>
++      {children}
++    </section>
++  );
++}
+diff --git a/apps/web/src/stores/torrents.ts b/apps/web/src/stores/torrents.ts
+index d36219a..8981187 100644
+--- a/apps/web/src/stores/torrents.ts
++++ b/apps/web/src/stores/torrents.ts
+@@ -73,6 +73,9 @@ function handle(event: ServerEvent): void {
+     case 'missing:updated':
+       void queryClient.invalidateQueries({ queryKey: ['missing'] });
+       break;
++    case 'sites:updated':
++      void queryClient.invalidateQueries({ queryKey: ['sites'] });
++      break;
+   }
+ }
+ 
+diff --git a/package.json b/package.json
+index 26af18d..c5d342a 100644
+--- a/package.json
++++ b/package.json
+@@ -23,10 +23,12 @@
+   "devDependencies": {
+     "@eslint/js": "^10.0.0",
+     "@playwright/test": "^1.63.0",
++    "@types/js-yaml": "^4.0.9",
+     "@types/node": "^24.0.0",
+     "eslint": "^10.12.0",
+     "eslint-plugin-react-hooks": "^7.0.0",
+     "globals": "^16.0.0",
++    "js-yaml": "^4.3.2",
+     "prettier": "^3.6.0",
+     "tsx": "^4.23.15",
+     "typescript": "~6.0.3",
+diff --git a/packages/core/src/core.ts b/packages/core/src/core.ts
+index 2406d5c..f0e6c7b 100644
+--- a/packages/core/src/core.ts
++++ b/packages/core/src/core.ts
+@@ -11,6 +11,7 @@ import { StatsService } from './stats/stats-service.ts';
+ import { WatchFolder } from './watch/watch-folder.ts';
+ import { RssService, type RssServiceDeps } from './rss/rss-service.ts';
+ import { MissingService, type MissingDeps } from './missing/missing-service.ts';
++import { SiteService, type SiteFetch } from './sites/site-service.ts';
+ import { fileKeyCipher } from './settings/secret-cipher.ts';
+ import { SettingsStore, type SecretCipher } from './settings/settings.ts';
+ import type { TorrentEngine } from './torrent/engine.ts';
+@@ -31,6 +32,8 @@ export interface CoreOptions {
+   rssFetch?: Pick<RssServiceDeps, 'fetchFeed' | 'fetchTorrent'>;
+   /** Network overrides for the missing-episode search (tests). */
+   missingFetch?: Pick<MissingDeps, 'fetchText' | 'fetchTorrent'>;
++  /** Network override for site searches (tests). */
++  siteFetch?: SiteFetch;
+   /** Don't start background schedulers and don't pace metadata APIs (tests). */
+   noSchedulers?: boolean;
+ }
+@@ -46,6 +49,7 @@ export interface Core {
+   torrents: TorrentManager;
+   rss: RssService;
+   missing: MissingService;
++  sites: SiteService;
+   upcoming: UpcomingService;
+   stats: StatsService;
+   watch: WatchFolder;
+@@ -72,11 +76,12 @@ export function createCore(opts: CoreOptions): Core {
+   } catch {
+     // Not ours to change (e.g. a read-only mount point): the files themselves are 0600.
+   }
++  const cipher = opts.cipher ?? fileKeyCipher(join(opts.configPath, 'secret.key'));
+   const settings = new SettingsStore(
+     join(opts.configPath, 'settings.json'),
+     { downloadPath: opts.downloadPath },
+     opts.env ?? process.env,
+-    opts.cipher ?? fileKeyCipher(join(opts.configPath, 'secret.key')),
++    cipher,
+   );
+   mkdirSync(settings.get().downloadPath, { recursive: true });
+ 
+@@ -101,12 +106,23 @@ export function createCore(opts: CoreOptions): Core {
+   });
+   torrents.init();
+ 
++  const sites = new SiteService({
++    db,
++    cipher,
++    events,
++    ...(opts.siteFetch ? { fetch: opts.siteFetch } : {}),
++    ...(opts.noSchedulers ? { intervalMs: 0 } : {}),
++  });
++
+   const rssRepo = new RssRepository(db);
+   const rss = new RssService({
+     repo: rssRepo,
+     torrents,
+     events,
+     settings: () => settings.get(),
++    // Feeds and torrent links on a configured site carry its session cookies.
++    requestHeaders: (url) => sites.headersFor(url),
++    trustsUrl: (url) => sites.ownsUrl(url),
+     ...opts.rssFetch,
+   });
+   if (!opts.noSchedulers) rss.start();
+@@ -114,6 +130,7 @@ export function createCore(opts: CoreOptions): Core {
+   const missing = new MissingService({
+     db,
+     repo: rssRepo,
++    sites,
+     torrents,
+     events,
+     settings: () => settings.get(),
+@@ -183,6 +200,7 @@ export function createCore(opts: CoreOptions): Core {
+     torrents,
+     rss,
+     missing,
++    sites,
+     upcoming,
+     stats,
+     watch,
+diff --git a/packages/core/src/db/migrations.ts b/packages/core/src/db/migrations.ts
+index 2eb3dce..c3456cf 100644
+--- a/packages/core/src/db/migrations.ts
++++ b/packages/core/src/db/migrations.ts
+@@ -133,4 +133,22 @@ export const migrations: string[] = [
+   `
+   ALTER TABLE torrents ADD COLUMN seeding_seconds INTEGER NOT NULL DEFAULT 0;
+   `,
++  `
++  CREATE TABLE sites (
++    id            TEXT PRIMARY KEY,
++    name          TEXT NOT NULL,
++    preset        TEXT,
++    enabled       INTEGER NOT NULL DEFAULT 1,
++    base_urls     TEXT NOT NULL DEFAULT '[]',
++    search_urls   TEXT NOT NULL DEFAULT '[]',
++    info_url      TEXT NOT NULL DEFAULT '',
++    download_url  TEXT NOT NULL DEFAULT '',
++    mapping       TEXT NOT NULL DEFAULT '{}',
++    fields        TEXT NOT NULL DEFAULT '[]',
++    secrets       TEXT NOT NULL DEFAULT '',
++    last_test     TEXT,
++    created_at    TEXT NOT NULL,
++    updated_at    TEXT NOT NULL
++  );
++  `,
+ ];
+diff --git a/packages/core/src/events.ts b/packages/core/src/events.ts
+index 36c7b2f..e6bf81f 100644
+--- a/packages/core/src/events.ts
++++ b/packages/core/src/events.ts
+@@ -20,6 +20,8 @@ export interface CoreEventMap {
+   'upcoming:updated': [null];
+   /** Missing-episode check state changed (run started, show checked, finished). */
+   'missing:updated': [null];
++  /** Sites were added, changed, tested or removed. */
++  'sites:updated': [null];
+   /** Recoverable engine problem (e.g. uTP port unavailable, continuing TCP-only). */
+   'engine:warning': [Error];
+ }
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index 213ef9e..01150b0 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -14,6 +14,7 @@ export {
+ } from './settings/settings.ts';
+ export { RssService } from './rss/rss-service.ts';
+ export { MissingService } from './missing/missing-service.ts';
++export { SiteService } from './sites/site-service.ts';
+ export { parseRelease, episodeKeys, titleKey, type ParsedRelease } from './media/parse-title.ts';
+ export { UpcomingService } from './media/upcoming.ts';
+ export { StatsService } from './stats/stats-service.ts';
+diff --git a/packages/core/src/missing/missing-service.ts b/packages/core/src/missing/missing-service.ts
+index 819d358..da794de 100644
+--- a/packages/core/src/missing/missing-service.ts
++++ b/packages/core/src/missing/missing-service.ts
+@@ -8,6 +8,7 @@ import type { CoreEvents } from '../events.ts';
+ import { fetchBytes } from '../net/http.ts';
+ import type { RssRepository, RuleRow } from '../rss/rss-repo.ts';
+ import { sameHost } from '../rss/rss-service.ts';
++import type { SiteService } from '../sites/site-service.ts';
+ import type { Settings } from '../settings/settings.ts';
+ import type { TorrentManager } from '../torrent/manager.ts';
+ import {
+@@ -48,7 +49,12 @@ export interface MissingDeps {
+   settings: () => Settings;
+   /** Injected for tests. */
+   fetchText?: FetchText;
+-  fetchTorrent?: (url: string, opts: { allowPrivate: boolean }) => Promise<Uint8Array>;
++  fetchTorrent?: (
++    url: string,
++    opts: { allowPrivate: boolean; headers: Record<string, string> },
++  ) => Promise<Uint8Array>;
++  /** User-configured tracker sites: extra search sources, cookies for their downloads. */
++  sites?: Pick<SiteService, 'sources' | 'headersFor' | 'ownsUrl'>;
+   /** Spacing between requests to one source (tests use 0). */
+   sourceIntervalMs?: number;
+ }
+@@ -127,6 +133,7 @@ export class MissingService {
+       ...(s.missingUseNyaa ? [nyaaSource(fetchText, gap)] : []),
+       ...(s.missingUseAnimeTosho ? [animeToshoSource(fetchText, gap)] : []),
+       ...parseTorznabUrls(s.torznabUrls).map((u) => torznabSource(u, fetchText, gap)),
++      ...(this.deps.sites?.sources() ?? []),
+     ];
+   }
+ 
+@@ -346,11 +353,13 @@ export class MissingService {
+       } else {
+         // Result links come from indexer content: only a configured Torznab endpoint's own
+         // host may be on the local network.
+-        const allowPrivate = parseTorznabUrls(this.deps.settings().torznabUrls).some((u) =>
+-          sameHost(u, result.url),
+-        );
++        const allowPrivate =
++          parseTorznabUrls(this.deps.settings().torznabUrls).some((u) => sameHost(u, result.url)) ||
++          (this.deps.sites?.ownsUrl(result.url) ?? false);
+         const data = await (this.deps.fetchTorrent ?? defaultFetchTorrent)(result.url, {
+           allowPrivate,
++          // A site's download link needs its passkey (in the URL) and often its session.
++          headers: this.deps.sites?.headersFor(result.url) ?? {},
+         });
+         torrentId = (await this.deps.torrents.addTorrentFile(data, opts)).id;
+       }
+@@ -386,12 +395,12 @@ const sorted = (s: Iterable<number>) => [...s].sort((a, b) => a - b);
+ 
+ async function defaultFetchTorrent(
+   url: string,
+-  { allowPrivate }: { allowPrivate: boolean },
++  { allowPrivate, headers }: { allowPrivate: boolean; headers: Record<string, string> },
+ ): Promise<Uint8Array> {
+   const { body } = await fetchBytes(url, {
+     allowPrivate,
+     maxBytes: 10 * 1024 * 1024,
+-    headers: { accept: 'application/x-bittorrent, */*' },
++    headers: { ...headers, accept: 'application/x-bittorrent, */*' },
+   });
+   return body;
+ }
+diff --git a/packages/core/src/net/http.ts b/packages/core/src/net/http.ts
+index e77327f..b372ba8 100644
+--- a/packages/core/src/net/http.ts
++++ b/packages/core/src/net/http.ts
+@@ -19,6 +19,8 @@ export interface FetchOptions {
+    * private one either way.
+    */
+   allowPrivate?: boolean;
++  /** Return error responses (4xx/5xx) instead of throwing, e.g. to show them to the user. */
++  acceptErrors?: boolean;
+ }
+ 
+ const MAX_REDIRECTS = 5;
+@@ -84,7 +86,7 @@ export class HttpError extends Error {
+ export async function fetchBytes(
+   url: string,
+   opts: FetchOptions = {},
+-): Promise<{ body: Uint8Array; contentType: string }> {
++): Promise<{ body: Uint8Array; contentType: string; status: number }> {
+   let parsed: URL;
+   try {
+     parsed = new URL(url);
+@@ -96,6 +98,7 @@ export async function fetchBytes(
+   // Redirects are followed by hand so every hop is checked (scheme and address).
+   let res: Response;
+   let firstPrivate: boolean | null = null;
++  const firstHost = parsed.host;
+   for (let hop = 0; ; hop++) {
+     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+       throw new HttpError(`Unsupported URL scheme: ${parsed.protocol}`);
+@@ -110,7 +113,11 @@ export async function fetchBytes(
+     const target = parsed;
+     res = await fetch(target, {
+       method: hop === 0 ? (opts.method ?? 'GET') : 'GET',
+-      headers: { 'user-agent': USER_AGENT, ...opts.headers },
++      // Cookies / auth headers only ever go to the host they were configured for.
++      headers: {
++        'user-agent': USER_AGENT,
++        ...(hop === 0 || target.host === firstHost ? opts.headers : {}),
++      },
+       body: hop === 0 ? opts.body : undefined,
+       redirect: 'manual',
+       signal,
+@@ -131,7 +138,8 @@ export async function fetchBytes(
+       throw new HttpError(`Invalid redirect from ${target.host}`);
+     }
+   }
+-  if (!res.ok) throw new HttpError(`HTTP ${res.status} from ${parsed.host}`, res.status);
++  if (!res.ok && !opts.acceptErrors)
++    throw new HttpError(`HTTP ${res.status} from ${parsed.host}`, res.status);
+   const declared = Number(res.headers.get('content-length') ?? 0);
+   if (declared > maxBytes) throw new HttpError(`Response from ${parsed.host} is too large`);
+   const chunks: Uint8Array[] = [];
+@@ -149,7 +157,11 @@ export async function fetchBytes(
+       chunks.push(value);
+     }
+   }
+-  return { body: Buffer.concat(chunks), contentType: res.headers.get('content-type') ?? '' };
++  return {
++    body: Buffer.concat(chunks),
++    contentType: res.headers.get('content-type') ?? '',
++    status: res.status,
++  };
+ }
+ 
+ export async function fetchJson<T>(url: string, opts: FetchOptions = {}): Promise<T> {
+diff --git a/packages/core/src/rss/rss-service.test.ts b/packages/core/src/rss/rss-service.test.ts
+index fda3fb2..46ab9d0 100644
+--- a/packages/core/src/rss/rss-service.test.ts
++++ b/packages/core/src/rss/rss-service.test.ts
+@@ -137,6 +137,7 @@ describe('RssService', () => {
+     // The link is on another host than the feed, so it may only reach public addresses.
+     expect(fetchTorrent).toHaveBeenCalledWith('https://example.org/linux.torrent', {
+       allowPrivate: false,
++      headers: {},
+     });
+     expect(core.torrents.list()).toMatchObject([{ name: 'FromUrl', status: 'paused' }]);
+     await expect(
+diff --git a/packages/core/src/rss/rss-service.ts b/packages/core/src/rss/rss-service.ts
+index ef1bea7..d5ceddc 100644
+--- a/packages/core/src/rss/rss-service.ts
++++ b/packages/core/src/rss/rss-service.ts
+@@ -33,8 +33,15 @@ export interface RssServiceDeps {
+   events: CoreEvents;
+   settings: () => Settings;
+   /** Injected for tests. */
+-  fetchFeed?: (url: string) => Promise<string>;
+-  fetchTorrent?: (url: string, opts: { allowPrivate: boolean }) => Promise<Uint8Array>;
++  fetchFeed?: (url: string, headers: Record<string, string>) => Promise<string>;
++  fetchTorrent?: (
++    url: string,
++    opts: { allowPrivate: boolean; headers: Record<string, string> },
++  ) => Promise<Uint8Array>;
++  /** Extra request headers (site cookies) for a URL. */
++  requestHeaders?: (url: string) => Record<string, string>;
++  /** URLs on user-configured sites may reach the local network. */
++  trustsUrl?: (url: string) => boolean;
+ }
+ 
+ /** Feeds, articles, download rules and the background refresh scheduler. */
+@@ -178,7 +185,10 @@ export class RssService {
+     const settings = this.deps.settings();
+     const intervalMs = (feed.refreshMinutes ?? settings.rssRefreshMinutes) * 60_000;
+     try {
+-      const xml = await (this.deps.fetchFeed ?? defaultFetchFeed)(feed.url);
++      const xml = await (this.deps.fetchFeed ?? defaultFetchFeed)(
++        feed.url,
++        this.deps.requestHeaders?.(feed.url) ?? {},
++      );
+       const parsed = await parseFeed(xml).catch(() => {
+         throw new Error('Not a valid RSS or Atom feed');
+       });
+@@ -632,8 +642,12 @@ export class RssService {
+       // The link comes from the feed's content: it may only reach the local network when it
+       // points at the feed's own (admin-chosen) host, e.g. Prowlarr's download links.
+       const feedUrl = this.repo.feed(feedId)?.url;
+-      const allowPrivate = !!feedUrl && sameHost(feedUrl, url);
+-      const data = await (this.deps.fetchTorrent ?? defaultFetchTorrent)(url, { allowPrivate });
++      const allowPrivate =
++        (!!feedUrl && sameHost(feedUrl, url)) || (this.deps.trustsUrl?.(url) ?? false);
++      const data = await (this.deps.fetchTorrent ?? defaultFetchTorrent)(url, {
++        allowPrivate,
++        headers: this.deps.requestHeaders?.(url) ?? {},
++      });
+       const item = await this.deps.torrents.addTorrentFile(data, opts);
+       return { torrentId: item.id, status: 'added' };
+     } catch (err) {
+@@ -683,10 +697,11 @@ function toRuleDTO(r: RuleRow): RuleDTO {
+   return rest;
+ }
+ 
+-async function defaultFetchFeed(url: string): Promise<string> {
++async function defaultFetchFeed(url: string, extra: Record<string, string>): Promise<string> {
+   const { body } = await fetchBytes(url, {
+     maxBytes: 8 * 1024 * 1024,
+     headers: {
++      ...extra,
+       accept:
+         'application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.5',
+     },
+@@ -705,12 +720,12 @@ export function sameHost(a: string, b: string): boolean {
+ 
+ async function defaultFetchTorrent(
+   url: string,
+-  { allowPrivate }: { allowPrivate: boolean },
++  { allowPrivate, headers }: { allowPrivate: boolean; headers: Record<string, string> },
+ ): Promise<Uint8Array> {
+   const { body } = await fetchBytes(url, {
+     allowPrivate,
+     maxBytes: 10 * 1024 * 1024,
+-    headers: { accept: 'application/x-bittorrent, */*' },
++    headers: { ...headers, accept: 'application/x-bittorrent, */*' },
+   });
+   return body;
+ }
+diff --git a/packages/core/src/sites/parse.ts b/packages/core/src/sites/parse.ts
+new file mode 100644
+index 0000000..b343af8
+--- /dev/null
++++ b/packages/core/src/sites/parse.ts
+@@ -0,0 +1,311 @@
++import type { SiteMapping } from '@draxmax/shared';
++import { parseFeed } from '../rss/feed-parser.ts';
++import { templateToRegex } from './templates.ts';
++
++/** One search hit before its download link is built. */
++export interface SiteHit {
++  title: string;
++  id: string | null;
++  groupId: string | null;
++  /** Link the response gave directly (magnet, .torrent, API download), if any. */
++  link: string | null;
++  seeders: number | null;
++  size: number | null;
++}
++
++export interface ParsedSearch {
++  format: 'json' | 'html' | 'rss';
++  hits: SiteHit[];
++  /** Field mapping used (detected or configured), for "use these mappings". */
++  mapping: SiteMapping;
++}
++
++const MAX_TITLE = 512;
++
++const UNITS: Record<string, number> = {
++  b: 1,
++  kb: 1e3,
++  mb: 1e6,
++  gb: 1e9,
++  tb: 1e12,
++  kib: 1024,
++  mib: 1024 ** 2,
++  gib: 1024 ** 3,
++  tib: 1024 ** 4,
++};
++
++/** 1234, "1234", "1.4 GB", "700 MiB" → bytes. */
++export function parseSize(v: unknown): number | null {
++  if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return v;
++  if (typeof v !== 'string') return null;
++  const m = /^\s*([\d.,]+)\s*([KMGT]i?B|B)?\s*$/i.exec(v);
++  if (!m) return null;
++  const n = Number(m[1]!.replace(/,(?=\d{3}\b)/g, '').replace(',', '.'));
++  if (!Number.isFinite(n)) return null;
++  return Math.round(n * (m[2] ? (UNITS[m[2].toLowerCase()] ?? 1) : 1));
++}
++
++function toInt(v: unknown): number | null {
++  const n =
++    typeof v === 'number' ? v : typeof v === 'string' ? Number(v.replace(/[,\s]/g, '')) : NaN;
++  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
++}
++
++const clip = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, MAX_TITLE);
++
++export function detectFormat(body: string, contentType: string): ParsedSearch['format'] {
++  const head = body.trimStart().slice(0, 200).toLowerCase();
++  if (/json/i.test(contentType) || head.startsWith('{') || head.startsWith('[')) return 'json';
++  if (/xml|rss|atom/i.test(contentType) && !/html/i.test(contentType)) return 'rss';
++  if (head.startsWith('<?xml') || head.startsWith('<rss') || head.startsWith('<feed')) return 'rss';
++  return 'html';
++}
++
++// --- JSON ------------------------------------------------------------------------
++
++type Obj = Record<string, unknown>;
++
++/** Reads a dot path ("data.torrents", "files.0.name"). */
++export function getPath(v: unknown, path: string): unknown {
++  let cur = v;
++  for (const key of path.split('.').filter(Boolean)) {
++    if (cur === null || typeof cur !== 'object') return undefined;
++    cur = (cur as Obj)[key];
++  }
++  return cur;
++}
++
++const CANDIDATES = {
++  title: [
++    'name',
++    'title',
++    'release_name',
++    'releasename',
++    'releaseName',
++    'torrent_name',
++    'filename',
++    'file_name',
++  ],
++  id: ['id', 'torrent_id', 'torrentid', 'torrentId', 'tid'],
++  groupId: ['group_id', 'groupid', 'groupId'],
++  seeders: ['seeders', 'seeds', 'seed', 'seeders_count', 'seedercount'],
++  size: ['size', 'bytes', 'total_size', 'filesize', 'file_size', 'size_bytes'],
++  download: [
++    'download',
++    'download_url',
++    'downloadurl',
++    'downloadUrl',
++    'download_link',
++    'magnet',
++    'magnet_uri',
++    'magnetlink',
++    'link',
++    'url',
++  ],
++};
++
++function findKey(o: Obj, names: string[], test: (v: unknown) => boolean): string | undefined {
++  const keys = Object.keys(o);
++  for (const n of names) {
++    const k = keys.find((x) => x.toLowerCase() === n.toLowerCase());
++    if (k && test(o[k])) return k;
++  }
++  return undefined;
++}
++
++/** Largest array of objects within a few levels (the result list), with its path. */
++function findList(root: unknown): { path: string; items: Obj[] } | null {
++  let best: { path: string; items: Obj[] } | null = null;
++  const visit = (v: unknown, path: string, depth: number) => {
++    if (depth > 4 || v === null || typeof v !== 'object') return;
++    if (Array.isArray(v)) {
++      const objs = v.filter((x): x is Obj => !!x && typeof x === 'object' && !Array.isArray(x));
++      const titled = objs.filter((o) => findKey(o, CANDIDATES.title, (x) => typeof x === 'string'));
++      if (titled.length && (!best || titled.length > best.items.length))
++        best = { path, items: objs };
++      return;
++    }
++    for (const [k, child] of Object.entries(v)) visit(child, path ? `${path}.${k}` : k, depth + 1);
++  };
++  visit(root, '', 0);
++  return best;
++}
++
++const isLinkish = (v: unknown) => typeof v === 'string' && /^(https?:\/\/|magnet:|\/)/i.test(v);
++
++function parseJson(body: string, mapping: SiteMapping): ParsedSearch {
++  let root: unknown;
++  try {
++    root = JSON.parse(body);
++  } catch {
++    throw new Error('The response is not valid JSON');
++  }
++  const found =
++    mapping.list !== undefined
++      ? { path: mapping.list, items: (getPath(root, mapping.list) as Obj[] | undefined) ?? [] }
++      : Array.isArray(root)
++        ? { path: '', items: root as Obj[] }
++        : findList(root);
++  if (!found || !Array.isArray(found.items))
++    return { format: 'json', hits: [], mapping: { ...mapping, format: 'json' } };
++  const sample = found.items.find((o) => o && typeof o === 'object') ?? {};
++  const pick = (configured: string | undefined, names: string[], test: (v: unknown) => boolean) =>
++    configured ?? findKey(sample, names, test);
++  const used: SiteMapping = {
++    format: 'json',
++    list: found.path,
++    title: pick(mapping.title, CANDIDATES.title, (v) => typeof v === 'string'),
++    id: pick(mapping.id, CANDIDATES.id, (v) => typeof v === 'number' || typeof v === 'string'),
++    groupId: pick(mapping.groupId, CANDIDATES.groupId, (v) => v != null),
++    seeders: pick(mapping.seeders, CANDIDATES.seeders, (v) => toInt(v) !== null),
++    size: pick(mapping.size, CANDIDATES.size, (v) => parseSize(v) !== null),
++    download: pick(mapping.download, CANDIDATES.download, isLinkish),
++  };
++  const hits = found.items.flatMap((o): SiteHit[] => {
++    const title = used.title ? getPath(o, used.title) : undefined;
++    if (typeof title !== 'string' || !title.trim()) return [];
++    const id = used.id ? getPath(o, used.id) : undefined;
++    const group = used.groupId ? getPath(o, used.groupId) : undefined;
++    const link = used.download ? getPath(o, used.download) : undefined;
++    return [
++      {
++        title: clip(title),
++        id: id === undefined || id === null ? null : String(id),
++        groupId: group === undefined || group === null ? null : String(group),
++        link: isLinkish(link) ? (link as string) : null,
++        seeders: used.seeders ? toInt(getPath(o, used.seeders)) : null,
++        size: used.size ? parseSize(getPath(o, used.size)) : null,
++      },
++    ];
++  });
++  return { format: 'json', hits, mapping: clean(used) };
++}
++
++function clean(m: SiteMapping): SiteMapping {
++  return Object.fromEntries(Object.entries(m).filter(([, v]) => v !== undefined)) as SiteMapping;
++}
++
++// --- HTML ------------------------------------------------------------------------
++
++const ENTITIES: Record<string, string> = {
++  amp: '&',
++  lt: '<',
++  gt: '>',
++  quot: '"',
++  apos: "'",
++  nbsp: ' ',
++  '#39': "'",
++};
++
++function decodeEntities(s: string): string {
++  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+|#39);/gi, (all, e: string) => {
++    if (e[0] === '#') {
++      const code = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : Number(e.slice(1));
++      return Number.isFinite(code) && code > 0 && code < 0x110000
++        ? String.fromCodePoint(code)
++        : all;
++    }
++    return ENTITIES[e.toLowerCase()] ?? all;
++  });
++}
++
++const stripTags = (s: string) => decodeEntities(s.replace(/<[^>]*>/g, ' '));
++
++/**
++ * Finds torrent links by the site's torrent-page pattern. The title is the link text (or
++ * its title attribute); seeders and size are read best-effort from the same table row.
++ */
++function parseHtml(body: string, infoUrl: string, mapping: SiteMapping): ParsedSearch {
++  const pattern = templateToRegex(infoUrl);
++  if (!pattern)
++    throw new Error('Set the torrent page link pattern (with {id}) to read HTML search pages');
++  const byId = new Map<string, SiteHit>();
++  const anchor = /<a\b([^>]*?)href\s*=\s*(?:"([^"]*)"|'([^']*)')([^>]*)>([\s\S]{0,2000}?)<\/a>/gi;
++  for (const m of body.matchAll(anchor)) {
++    const href = decodeEntities(m[2] ?? m[3] ?? '');
++    const id = pattern.exec(href)?.groups?.id;
++    if (!id) continue;
++    const attrs = `${m[1]} ${m[4]}`;
++    const titleAttr = /\btitle\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(attrs);
++    let title = clip(stripTags(m[5] ?? ''));
++    if (title.length < 3 && titleAttr)
++      title = clip(decodeEntities(titleAttr[1] ?? titleAttr[2] ?? ''));
++    if (title.length < 3) continue;
++    const prev = byId.get(id);
++    if (prev && prev.title.length >= title.length) continue;
++    const row = rowAround(body, m.index ?? 0);
++    byId.set(id, {
++      title,
++      id,
++      groupId: null,
++      link: directLink(row),
++      seeders: rowSeeders(row),
++      size: rowSize(row),
++    });
++  }
++  return { format: 'html', hits: [...byId.values()], mapping: { ...mapping, format: 'html' } };
++}
++
++/** The <tr>…</tr> (or a 3 kB window) around a position. */
++function rowAround(html: string, at: number): string {
++  const start = html.lastIndexOf('<tr', at);
++  const end = html.indexOf('</tr>', at);
++  if (start !== -1 && end !== -1 && end - start < 20_000 && at - start < 10_000)
++    return html.slice(start, end);
++  return html.slice(Math.max(0, at - 1500), at + 1500);
++}
++
++function directLink(row: string): string | null {
++  const magnet = /href\s*=\s*["'](magnet:\?[^"']+)["']/i.exec(row);
++  if (magnet) return decodeEntities(magnet[1]!);
++  const dl = /href\s*=\s*["']([^"']*(?:download|\.torrent)[^"']*)["']/i.exec(row);
++  return dl ? decodeEntities(dl[1]!) : null;
++}
++
++function rowSeeders(row: string): number | null {
++  const m =
++    /<(?:td|span|div)[^>]*(?:class|title|data-[a-z-]+)\s*=\s*["'][^"']*seed[^"']*["'][^>]*>\s*(?:<[^>]+>\s*)*([\d,]+)/i.exec(
++      row,
++    );
++  return m ? toInt(m[1]) : null;
++}
++
++function rowSize(row: string): number | null {
++  const m = /(\d+(?:[.,]\d+)?)\s*(TiB|GiB|MiB|KiB|TB|GB|MB|KB)\b/i.exec(stripTags(row));
++  return m ? parseSize(`${m[1]} ${m[2]}`) : null;
++}
++
++// --- RSS -------------------------------------------------------------------------
++
++async function parseRss(body: string, mapping: SiteMapping): Promise<ParsedSearch> {
++  const feed = await parseFeed(body).catch(() => {
++    throw new Error('The response is not a valid RSS/Torznab feed');
++  });
++  return {
++    format: 'rss',
++    hits: feed.items.map((i) => ({
++      title: clip(i.title),
++      id: null,
++      groupId: null,
++      link: i.torrentURL,
++      seeders: i.seeders,
++      size: i.size,
++    })),
++    mapping: { ...mapping, format: 'rss' },
++  };
++}
++
++/** Parses a search response by its configured or detected format. */
++export async function parseSearch(
++  body: string,
++  contentType: string,
++  opts: { infoUrl: string; mapping: SiteMapping },
++): Promise<ParsedSearch> {
++  const format =
++    opts.mapping.format && opts.mapping.format !== 'auto'
++      ? opts.mapping.format
++      : detectFormat(body, contentType);
++  if (format === 'json') return parseJson(body, opts.mapping);
++  if (format === 'rss') return parseRss(body, opts.mapping);
++  return parseHtml(body, opts.infoUrl, opts.mapping);
++}
+diff --git a/packages/core/src/sites/presets.json b/packages/core/src/sites/presets.json
+new file mode 100644
+index 0000000..7166b80
+--- /dev/null
++++ b/packages/core/src/sites/presets.json
+@@ -0,0 +1,2030 @@
++{
++  "source": "autobrr/autobrr@478be9a9e9f9a92d046f13136c5daa30b6008ab1 internal/indexer/definitions (site facts only)",
++  "presets": [
++    {
++      "id": "0dayfiles",
++      "name": "0DayFiles",
++      "privacy": "private",
++      "urls": ["https://0dayfiles.net/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to My Settings > Settings -> RSS Key, and copy your RSS Key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "abnormal",
++      "name": "ABNormal",
++      "privacy": "private",
++      "urls": ["https://abn.lol/"],
++      "fields": [
++        {
++          "name": "uid",
++          "label": "User Id",
++          "help": "This is the UserId in a RSS link.",
++          "secret": true
++        },
++        {
++          "name": "passkey",
++          "label": "Torrent key",
++          "help": "This is the TorrentKey in a RSS link.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/Torrent/Details?ReleaseId={id}",
++      "downloadUrl": "/Feed/Download?UserID={uid}&TorrentKey={passkey}&ReleaseId={id}",
++      "searchUrls": []
++    },
++    {
++      "id": "acidlounge",
++      "name": "Acid-Lounge",
++      "privacy": "private",
++      "urls": ["https://www.acid-lounge.org.uk/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Pass key",
++          "help": "Your passkey",
++          "secret": true
++        },
++        {
++          "name": "uid",
++          "label": "User ID",
++          "help": "Your User ID",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/rssdownload.php?passkey={passkey}&uid={uid}&tid={id}",
++      "searchUrls": []
++    },
++    {
++      "id": "aither",
++      "name": "Aither",
++      "privacy": "private",
++      "urls": ["https://aither.cc/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to your profile tab, Settings > Security, copy RSS Key (RID)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "alpharatio",
++      "name": "AlphaRatio",
++      "privacy": "private",
++      "urls": ["https://alpharatio.cc/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "animebytes",
++      "name": "AnimeBytes",
++      "privacy": "private",
++      "urls": ["https://animebytes.tv/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "PassKey",
++          "help": "Settings -> Account -> Passkey.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
++      "downloadUrl": "/torrent/{id}/download/{passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "animeworld",
++      "name": "AnimeWorld",
++      "privacy": "private",
++      "urls": ["https://animeworld.cx/"],
++      "fields": [
++        {
++          "name": "rss_key",
++          "label": "RSS key",
++          "help": "Your RSS key, required to download torrent files. (User-Avatar -> 'Meine Sicherheit' -> 'RSS Key (RID)')",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rss_key}",
++      "searchUrls": []
++    },
++    {
++      "id": "anthelion",
++      "name": "Anthelion",
++      "privacy": "private",
++      "urls": ["https://anthelion.me/"],
++      "fields": [
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "bemaniso",
++      "name": "Bemaniso",
++      "privacy": "private",
++      "urls": ["https://bemaniso.ws/"],
++      "fields": [
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        },
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={torrentInfoId}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "beyondhd",
++      "name": "BeyondHD",
++      "privacy": "private",
++      "urls": ["https://beyond-hd.me/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to your profile, My Security, RSS Key and copy RSS key.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/autodl?id={id}",
++      "downloadUrl": "/torrent/download/auto.{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "bithdtv",
++      "name": "BIT-HDTV",
++      "privacy": "private",
++      "urls": ["https://www.bit-hdtv.com/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Pass key",
++          "help": "Your passkey",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/rssdownload.php?id={id}&passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "bithumen",
++      "name": "BitHUmen",
++      "privacy": "private",
++      "urls": ["https://bithumen.be/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "This is your passkey you can find in a RSS link or in the announce url of a torrent.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download/{passkey}/{id}.torrent",
++      "searchUrls": []
++    },
++    {
++      "id": "bitsexy",
++      "name": "BitSexy",
++      "privacy": "private",
++      "urls": ["https://bitsexy.org/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Copy your passkey from the profile and paste it in the field below.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?torrent={id}&torrent_pass={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "btfiles",
++      "name": "BitTorrentFiles",
++      "privacy": "private",
++      "urls": ["https://bittorrentfiles.me/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "The rsskey in your RSS feed link",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?torrent={id}&k={rsskey}&ssl=1",
++      "searchUrls": []
++    },
++    {
++      "id": "BJ-Share",
++      "name": "BJ-Share",
++      "privacy": "private",
++      "urls": ["https://bj-share.info/"],
++      "fields": [
++        {
++          "name": "apikey",
++          "label": "API Key",
++          "help": "Go to your Profile tab, Settings > API keys > Define a name > Set Download > Copy the API key > Save Configurations",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?torrentid={id}",
++      "downloadUrl": "/torrent/download/{id}.{apikey}",
++      "searchUrls": []
++    },
++    {
++      "id": "btn",
++      "name": "BroadcasTheNet",
++      "privacy": "private",
++      "urls": ["https://broadcasthe.net/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        },
++        {
++          "name": "api_key",
++          "label": "API Key",
++          "help": "Username -> Edit Profile -> API",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "brks",
++      "name": "BrokenStones",
++      "privacy": "private",
++      "urls": ["https://brokenstones.is/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={groupId}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "capybarabr",
++      "name": "CapybaraBR",
++      "privacy": "private",
++      "urls": ["https://capybarabr.com/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to your profile tab, Settings > Security, copy RSS Key (RID)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "crt",
++      "name": "Cathode-Ray Tube",
++      "privacy": "private",
++      "urls": ["https://www.cathode-ray.tube/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "czteam",
++      "name": "CZTeam",
++      "privacy": "private",
++      "urls": ["https://czteam.me"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Go to My Settings -> Passkey and copy your Passkey",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?torrent={id}&passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "danishbits",
++      "name": "DanishBits",
++      "privacy": "private",
++      "urls": ["https://danishbits.me/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS Key",
++          "help": "Go to your profile, Settings > RSS key, and copy the RSS Key (RID)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "danishbytes",
++      "name": "DanishBytes",
++      "privacy": "private",
++      "urls": ["https://danishbytes.club/", "https://danishbytes2.org/", "https://dbytes.org/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "RSS key",
++          "help": "Go to your profile tab under safety, copy RSS Key (RID)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "darkpeers",
++      "name": "DarkPeers",
++      "privacy": "private",
++      "urls": ["https://darkpeers.org"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to My Settings > RSS Key, and copy your RSS Key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "dasunerwartete",
++      "name": "DasUnerwartete",
++      "privacy": "private",
++      "urls": ["https://dasunerwartete.biz/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS Key",
++          "help": "Copy from a direct download RSS link. (Torrents > RSS Feed)",
++          "secret": true
++        },
++        {
++          "name": "userId",
++          "label": "User ID",
++          "help": "Check your profile URL and copy the ID.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/rss-download.php?uid={userId}&pk={rsskey}&torrent={id}",
++      "searchUrls": []
++    },
++    {
++      "id": "digitalcore",
++      "name": "DigitalCore",
++      "privacy": "private",
++      "urls": ["https://digitalcore.club/", "https://prxy.digitalcore.club/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "PassKey",
++          "help": "Settings -> Security -> Passkey.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrent/{id}/",
++      "downloadUrl": "/api/v1/torrents/download/{id}/{passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "dirtybytes",
++      "name": "DirtyBytes",
++      "privacy": "private",
++      "urls": ["https://dirtybytes.net/", "https://trackerprxy.dirtybytes.net/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "PassKey",
++          "help": "Settings -> Security -> Passkey.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrent/{id}/",
++      "downloadUrl": "/api/v1/torrents/download/{id}/{passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "docspedia",
++      "name": "DocsPedia",
++      "privacy": "private",
++      "urls": ["https://www.docspedia.world/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "The passkey in your profile.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?torrent={id}&torrent_pass={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "emp",
++      "name": "Empornium",
++      "privacy": "private",
++      "urls": ["https://emparadise.rs", "https://www.empornium.sx/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "enthralled",
++      "name": "Enthralled",
++      "privacy": "private",
++      "urls": ["https://enthralled.me/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "f1carreras",
++      "name": "F1Carreras",
++      "privacy": "private",
++      "urls": ["https://f1carreras.xyz/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to Settings > RSS Key, and copy your RSS Key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "fappaizuri",
++      "name": "Fappaizuri",
++      "privacy": "private",
++      "urls": ["https://fappaizuri.me/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "To be found in the navigation pane under \"Your Profile\".",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents-details.php?id={id}",
++      "downloadUrl": "/download.php?id={id}&hit=1&passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "fl",
++      "name": "FileList",
++      "privacy": "private",
++      "urls": ["https://filelist.io/", "https://thefl.org/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "The passkey in your profile.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "finelite",
++      "name": "FinElite",
++      "privacy": "private",
++      "urls": ["https://finelite.org/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Click on Settings > Torrent Settings > Copy the Auth key and paste it here.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details/{id}",
++      "downloadUrl": "/lataa/{authkey}/{id}.torrent",
++      "searchUrls": []
++    },
++    {
++      "id": "funfile",
++      "name": "FunFile",
++      "privacy": "private",
++      "urls": ["https://www.funfile.org/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "The passkey in your FunFile RSS feed link.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php/{id}/{passkey}/{releaseName}.torrent",
++      "searchUrls": []
++    },
++    {
++      "id": "fuzer",
++      "name": "Fuzer",
++      "privacy": "private",
++      "urls": ["https://fuzer.xyz/"],
++      "fields": [
++        {
++          "name": "uid",
++          "label": "User ID",
++          "help": "Create rss link at https://www.fuzer.me/getrss.php and find at &u=11111",
++          "secret": true
++        },
++        {
++          "name": "passkey",
++          "label": "PassKey",
++          "help": "Create rss link at https://www.fuzer.me/getrss.php and find at &torrent_pass=...",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/attachment.php?attachmentid={id}",
++      "downloadUrl": "/rss/torrent.php/{id}/{uid}/{passkey}/{releaseName}.torrent",
++      "searchUrls": []
++    },
++    {
++      "id": "ggn",
++      "name": "GazelleGames",
++      "privacy": "private",
++      "urls": ["https://gazellegames.net/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        },
++        {
++          "name": "api_key",
++          "label": "API Key",
++          "help": "Username -> Edit / Settings -> API Keys",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "happyfappy",
++      "name": "HappyFappy",
++      "privacy": "private",
++      "urls": ["https://www.happyfappy.net/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "huno",
++      "name": "Hawke-UNO",
++      "privacy": "private",
++      "urls": ["https://hawke.uno/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to your profile, My Security / RSS Key (RID) and copy your Current RID",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "hdonly",
++      "name": "HD-Only",
++      "privacy": "private",
++      "urls": ["https://hd-only.org/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "hd-space",
++      "name": "HD-Space",
++      "privacy": "private",
++      "urls": ["https://hd-space.org/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to My Panel and then Change PID. It will show the PID, but don't click it!",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/index.php?page=torrent-details&id={id}",
++      "downloadUrl": "/download.php?id={id}&f={releaseName}.torrent&rsspid={rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "hdt",
++      "name": "HD-Torrents",
++      "privacy": "private",
++      "urls": ["https://hd-torrents.org/", "https://hdts.ru/"],
++      "fields": [
++        {
++          "name": "key",
++          "label": "RSS key",
++          "help": "Generate a RSS feed and copy key from URL",
++          "secret": true
++        },
++        {
++          "name": "token",
++          "label": "RSS Token",
++          "help": "Generate a RSS feed and copy token from URL",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/rss/?action=download&key={key}&token={token}&hash={id}&title={releaseName}",
++      "searchUrls": []
++    },
++    {
++      "id": "hdb",
++      "name": "HDBits",
++      "privacy": "private",
++      "urls": ["https://hdbits.org/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Copy the passkey from your profile page",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "hebits",
++      "name": "Hebits",
++      "privacy": "private",
++      "urls": ["https://hebits.net/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "PassKey",
++          "help": "Right click download on a torrent and get the passkey.",
++          "secret": true
++        },
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click download on a torrent and get the authkey.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "homiehelpdesk",
++      "name": "HomieHelpDesk",
++      "privacy": "private",
++      "urls": ["https://homiehelpdesk.net/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to My Settings > RSS Key, and copy your RSS Key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "immortalseed",
++      "name": "ImmortalSeed",
++      "privacy": "private",
++      "urls": ["https://immortalseed.me/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Go to https://immortalseed.me/getrss.php to get the RSS feed link and extract passkey from secret_key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?type=rss&secret_key={passkey}&id={id}",
++      "searchUrls": []
++    },
++    {
++      "id": "infinityhd",
++      "name": "InfinityHD",
++      "privacy": "private",
++      "urls": ["https://infinityhd.net/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to My Settings > Settings -> RSS Key, and copy your RSS Key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "insane",
++      "name": "iNSANE",
++      "privacy": "private",
++      "urls": ["https://newinsane.info/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Check in Settings (newinsane.info/settings.php) or RSS (newinsane.info/rss_list.php) to find your passkey.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php/{id}/{passkey}/[iNs-{id}][{category}]{releaseName}.torrent",
++      "searchUrls": []
++    },
++    {
++      "id": "ipt",
++      "name": "IPTorrents",
++      "privacy": "private",
++      "urls": [
++        "https://iptorrents.com/",
++        "https://iptorrents.me/",
++        "https://nemo.iptorrents.com/",
++        "https://ipt.getcrazy.me/",
++        "https://ipt.findnemo.net/",
++        "https://ipt.beelyrics.net/",
++        "https://ipt.venom.global/",
++        "https://ipt.workisboring.net/",
++        "https://ipt.lol/",
++        "https://ipt.cool/",
++        "https://ipt.world/"
++      ],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Copy the passkey from your details page.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php/{id}/{releaseName}.torrent?torrent_pass={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "itatorrents",
++      "name": "ItaTorrents",
++      "privacy": "private",
++      "urls": ["https://itatorrents.xyz/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to your profile tab, Settings > RSS Keys, copy RSS Key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "keepfrds",
++      "name": "KeepFRDS",
++      "privacy": "private",
++      "urls": ["https://pt.keepfrds.com/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Your passkey.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "locadora",
++      "name": "Locadora",
++      "privacy": "private",
++      "urls": ["https://locadora.cc/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to your profile tab, Settings > Security, copy RSS Key (RID)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "lst",
++      "name": "LST",
++      "privacy": "private",
++      "urls": ["https://lst.gg/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to your profile tab, Settings > Security, copy RSS Key (RID)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "luminarr",
++      "name": "Luminarr",
++      "privacy": "private",
++      "urls": ["https://luminarr.me/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to Settings > RSS Key, and copy your RSS Key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "materialize",
++      "name": "Materialize",
++      "privacy": "private",
++      "urls": ["https://materialize.is/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents?torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&authkey={authkey}&torrent_pass={torrent_pass}&id={id}",
++      "searchUrls": []
++    },
++    {
++      "id": "midnightscene",
++      "name": "MidnightScene",
++      "privacy": "private",
++      "urls": ["https://midnightscene.cc/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to My Settings > Settings -> RSS Key, and copy your RSS Key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "milkie",
++      "name": "Milkie",
++      "privacy": "private",
++      "urls": ["https://milkie.cc/"],
++      "fields": [
++        {
++          "name": "apikey",
++          "label": "Api key",
++          "help": "Go to your profile and copy your Api key from settings",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/browse/{id}",
++      "downloadUrl": "/api/v1/torrents/{id}/torrent?key={apikey}",
++      "searchUrls": []
++    },
++    {
++      "id": "myanonamouse",
++      "name": "MyAnonamouse",
++      "privacy": "private",
++      "urls": ["https://www.myanonamouse.net/"],
++      "fields": [
++        {
++          "name": "cookie",
++          "label": "Cookie (mam_id)",
++          "help": "Under your username, go to preferences then security and generate a session using the IP address Autobrr runs on. Changes monthly. Format mam_id=$ID;",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/t/{id}",
++      "downloadUrl": "/tor/download.php?tid={id}",
++      "searchUrls": []
++    },
++    {
++      "id": "ncore",
++      "name": "nCore",
++      "privacy": "private",
++      "urls": ["https://ncore.pro/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Check a torrent download link. key='value' is your passkey.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?action=details&id={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&key={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "nbl",
++      "name": "Nebulance",
++      "privacy": "private",
++      "urls": ["https://nebulance.io/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "norbits",
++      "name": "Norbits",
++      "privacy": "private",
++      "urls": ["https://www.norbits.net/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Copy passkey from a download link",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "nordicbytes",
++      "name": "NordicBytes",
++      "privacy": "private",
++      "urls": ["https://nordicbytes.org/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS Key",
++          "help": "Click the cog icon in the top right corner, RSS key is located in the sidebar.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "nordicquality",
++      "name": "NordicQuality",
++      "privacy": "private",
++      "urls": ["https://nordicq.org"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to your profile and under Settings > Security, copy your RSS Key (RID)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "nyaa",
++      "name": "Nyaa",
++      "privacy": "public",
++      "urls": ["https://nyaa.si/"],
++      "fields": [],
++      "infoUrl": "/view/{id}",
++      "downloadUrl": "/download/{id}.torrent",
++      "searchUrls": ["/?page=rss&c=1_0&f=0&q={query}"]
++    },
++    {
++      "id": "onlyencodes",
++      "name": "OnlyEncodes",
++      "privacy": "private",
++      "urls": ["https://onlyencodes.cc"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to your profile > Settings > Security > RSS Key (RID) and paste your RID into this field.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "ops",
++      "name": "Orpheus",
++      "privacy": "private",
++      "urls": ["https://orpheus.network/"],
++      "fields": [
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        },
++        {
++          "name": "api_key",
++          "label": "API Key",
++          "help": "Settings -> Access Settings -> API Keys - Create a new api token.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "ptp",
++      "name": "PassThePopcorn",
++      "privacy": "private",
++      "urls": ["https://passthepopcorn.me/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}&key={key}",
++      "searchUrls": []
++    },
++    {
++      "id": "peergarden",
++      "name": "PeerGarden",
++      "privacy": "private",
++      "urls": ["https://peergarden.org/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS Key",
++          "help": "Click the cog icon in the top right corner, RSS key is located in the sidebar.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "phoenixproject",
++      "name": "Phoenix Project",
++      "privacy": "private",
++      "urls": ["https://phoenixproject.app/"],
++      "fields": [
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "pixelhd",
++      "name": "PixelHD",
++      "privacy": "private",
++      "urls": ["https://pixelhd.me/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Your Authkey from your PixelHD profile or torrent download link.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Your Passkey (torrent_pass) from your PixelHD profile.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "polishtracker",
++      "name": "PolishTracker",
++      "privacy": "private",
++      "urls": ["https://pte.nu/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to your profile and copy your RSS key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/downrss/{rsskey}/{id}",
++      "searchUrls": []
++    },
++    {
++      "id": "pornbay",
++      "name": "Pornbay",
++      "privacy": "private",
++      "urls": ["https://pornbay.org/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "pretome",
++      "name": "PreToMe",
++      "privacy": "private",
++      "urls": ["https://pretome.info/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Copy your RSS key from the RSS feed",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php/{id}/{rsskey}/{releaseName}.torrent",
++      "searchUrls": []
++    },
++    {
++      "id": "pss",
++      "name": "PrivateSilverScreen",
++      "privacy": "private",
++      "urls": ["https://privatesilverscreen.cc/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to your profile > Settings > Security > RSS Key (RID) and paste your RID into this field.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "ptf",
++      "name": "PTFiles",
++      "privacy": "private",
++      "urls": ["https://ptfiles.net/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Pass key",
++          "help": "Grab your passkey from your RSS feed.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/dl.php/{id}/{passkey}/{releaseName}.torrent",
++      "searchUrls": []
++    },
++    {
++      "id": "pussytorrents",
++      "name": "PussyTorrents",
++      "privacy": "private",
++      "urls": ["https://pussytorrents.org/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Copy your RSS key from the RSS feed",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrent/{id}",
++      "downloadUrl": "/rss/download/{id}/{rsskey}/{releaseName}.torrent",
++      "searchUrls": []
++    },
++    {
++      "id": "rastastugan",
++      "name": "Rastastugan",
++      "privacy": "private",
++      "urls": ["https://rastastugan.org/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS Key",
++          "help": "Go to My Settings > RSS Key, and copy your RSS Key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "redacted",
++      "name": "Redacted",
++      "privacy": "private",
++      "urls": ["https://redacted.sh/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        },
++        {
++          "name": "api_key",
++          "label": "API Key",
++          "help": "Settings -> Account Settings -> API Keys - Generate new api keys. Scope (User, Torrents)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "rfx",
++      "name": "ReelFliX",
++      "privacy": "private",
++      "urls": ["https://reelflix.cc/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to your profile > Settings > Security > RSS Key (RID) and paste your current RID into this field.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "rmc",
++      "name": "Retro Movies Club",
++      "privacy": "private",
++      "urls": ["https://retro-movies.club"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to your profile > Settings > Security > RSS Key (RID) and paste your RID into this field.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "retroflix",
++      "name": "RetroFlix",
++      "privacy": "private",
++      "urls": ["https://retroflix.club/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Go to User CP, User CP Home and copy the passkey",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/browse/t/{id}/{releaseName}",
++      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "retrotoonworld",
++      "name": "RetroToon World",
++      "privacy": "private",
++      "urls": ["https://retrotoon.world/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Copy your passkey from your profile and paste it in the field below.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?id={id}&torrent_pass={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "revolutiontt",
++      "name": "RevolutionTT",
++      "privacy": "private",
++      "urls": ["https://revott.me/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Copy the passkey from a download link",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php/{id}/{releaseName}.torrent?passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "rocket-hd",
++      "name": "RocketHD",
++      "privacy": "private",
++      "urls": ["https://rocket-hd.cc/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Your profile > Settings > RSS Key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "romanianmetaltorrents",
++      "name": "Romanian Metal Torrents",
++      "privacy": "private",
++      "urls": ["https://metal.iplay.ro/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Go to your profile and copy your passkey",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php/{id}/{releaseName}.torrent?passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "samaritano",
++      "name": "Samaritano",
++      "privacy": "private",
++      "urls": ["https://samaritano.cc/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to My Settings > Settings -> RSS Key, and copy your RSS Key (RID)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "satclubbing",
++      "name": "SATClubbing",
++      "privacy": "private",
++      "urls": ["https://satclubbing.club/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "PassKey",
++          "help": "Copy the passkey from your profile",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?id={id}&name={encodedName}&passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "scenehd",
++      "name": "SceneHD",
++      "privacy": "private",
++      "urls": ["https://scenehd.org/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Go to https://scenehd.org/getrss.php and extract your Passkey",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "seedcore",
++      "name": "SeedCore",
++      "privacy": "private",
++      "urls": ["https://seedcore.net"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to My Settings > Settings -> RSS Key, and copy your RSS Key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "seedpool",
++      "name": "SeedPool",
++      "privacy": "private",
++      "urls": ["https://seedpool.org/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to Settings > RSS Keys and then copy RSS Key (RID)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "seedpool_music",
++      "name": "SeedPool (Music)",
++      "privacy": "private",
++      "urls": ["https://seedpool.org/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to Settings > RSS Keys and then copy RSS Key (RID)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "shareisland",
++      "name": "ShareIsland",
++      "privacy": "private",
++      "urls": ["https://shareisland.org"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to your profile tab, Settings > RSS Key, copy RSS Key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "sharewood",
++      "name": "Sharewood",
++      "privacy": "private",
++      "urls": ["https://www.sharewood.tv/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Go to My Profile, then click on Show Passkey",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{torrentSlug}.{id}",
++      "downloadUrl": "/api/{passkey}/{id}/download",
++      "searchUrls": []
++    },
++    {
++      "id": "simurg",
++      "name": "Simurg",
++      "privacy": "private",
++      "urls": ["https://simurg.world/"],
++      "fields": [
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click a torrent's download link and copy the torrent_pass value.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "stc",
++      "name": "SkipTheCommercials",
++      "privacy": "private",
++      "urls": ["https://skipthecommercials.xyz/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to your profile tab, Settings > Security, copy RSS Key (RID)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "speedapp",
++      "name": "SpeedApp",
++      "privacy": "private",
++      "urls": ["https://speedapp.io/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "PassKey",
++          "help": "Copy the passkey from your profile",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/browse/{id}/t/{releaseName}",
++      "downloadUrl": "/rss/download/{id}/{releaseName}.torrent?passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "subsplease",
++      "name": "SubsPlease",
++      "privacy": "public",
++      "urls": ["https://nyaa.si/"],
++      "fields": [],
++      "infoUrl": "{infoUrl}",
++      "downloadUrl": "{torrentUrl}",
++      "searchUrls": []
++    },
++    {
++      "id": "sugoimusic",
++      "name": "SugoiMusic",
++      "privacy": "private",
++      "urls": ["https://sugoimusic.me/"],
++      "fields": [
++        {
++          "name": "authkey",
++          "label": "Auth key",
++          "help": "Right click DL on a torrent and get the authkey.",
++          "secret": true
++        },
++        {
++          "name": "torrent_pass",
++          "label": "Torrent pass",
++          "help": "Right click DL on a torrent and get the torrent_pass.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
++      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
++      "searchUrls": []
++    },
++    {
++      "id": "superbits",
++      "name": "SuperBits",
++      "privacy": "private",
++      "urls": ["https://superbits.org/", "https://login.superbits.org/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Copy the passkey from the /rss page.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrent/{id}/",
++      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
++      "searchUrls": [
++        "/search?search={query}",
++        "/api/v1/torrents?extendedSearch=false&freeleech=false&index=0&limit=50&order=asc&page=search&searchText={query}&section=all&sort=n"
++      ]
++    },
++    {
++      "id": "t66y",
++      "name": "T66y",
++      "privacy": "public",
++      "urls": ["https://t66y.com/"],
++      "fields": [],
++      "infoUrl": "",
++      "downloadUrl": "",
++      "searchUrls": []
++    },
++    {
++      "id": "tdc",
++      "name": "TheDarkCommunity",
++      "privacy": "private",
++      "urls": ["https://thedarkcommunity.cc/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to your profile tab, Settings > Security, copy RSS Key (RID)",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "torrentbytes",
++      "name": "TorrentBytes",
++      "privacy": "private",
++      "urls": ["https://torrentbytes.net/"],
++      "fields": [
++        {
++          "name": "cookie",
++          "label": "Cookie",
++          "help": "Check how to get cookies in your browser and find the uid and pass cookies. Example: uid=1234; pass=asdf12347asdf13",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?id={id}&name={releaseName}.torrent",
++      "searchUrls": []
++    },
++    {
++      "id": "torrentday",
++      "name": "TorrentDay",
++      "privacy": "private",
++      "urls": [
++        "https://www.torrentday.com/",
++        "https://tday.love/",
++        "https://secure.torrentday.com/",
++        "https://classic.torrentday.com/",
++        "https://torrentday.it/",
++        "https://td.findnemo.net/",
++        "https://td.getcrazy.me/",
++        "https://td.venom.global/",
++        "https://td.workisboring.net/"
++      ],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Create a RSS Link to find out your PASSKEY",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php/{id}/{releaseName}.torrent?torrent_pass={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "torrentleech",
++      "name": "TorrentLeech",
++      "privacy": "private",
++      "urls": [
++        "https://www.torrentleech.org/",
++        "https://www.torrentleech.cc/",
++        "https://www.torrentleech.me/",
++        "https://www.tleechreload.org/",
++        "https://www.tlgetin.cc/"
++      ],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to your profile and copy your RSS key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrent/{id}",
++      "downloadUrl": "/rss/download/{id}/{rsskey}/{releaseName}.torrent",
++      "searchUrls": []
++    },
++    {
++      "id": "torrentnetwork",
++      "name": "TorrentNetwork",
++      "privacy": "private",
++      "urls": ["https://tntracker.org/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "PassKey",
++          "help": "Home -> RSS -> Extract PassKey from URL",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrent/{id}",
++      "downloadUrl": "/download/{id}/{passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "tsyndikat",
++      "name": "TorrentSyndikat",
++      "privacy": "private",
++      "urls": ["https://torrent-syndikat.org/"],
++      "fields": [
++        {
++          "name": "api_key",
++          "label": "Api-Key",
++          "help": "Generate an apikey with download scope and copy it. Profileinstellungen -> API-Keys -> API-Key erzeugen",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?id={id}&apikey={api_key}",
++      "searchUrls": []
++    },
++    {
++      "id": "trancetraffic",
++      "name": "TranceTraffic",
++      "privacy": "private",
++      "urls": ["https://trancetraffic.com/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Passkey",
++          "help": "Go to https://www.trancetraffic.com/links.php, click on RSS Feed and copy your passkey from the url.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php/{id}/{releaseName}.torrent?passkey={passkey}",
++      "searchUrls": []
++    },
++    {
++      "id": "ulcx",
++      "name": "Upload.cx",
++      "privacy": "private",
++      "urls": ["https://upload.cx/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key (RID)",
++          "help": "Go to your profile > Settings > Security > RSS Key (RID) and paste your RID into this field.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/torrents/{id}",
++      "downloadUrl": "/torrent/download/{id}.{rsskey}",
++      "searchUrls": []
++    },
++    {
++      "id": "xspeeds",
++      "name": "XSpeeds",
++      "privacy": "private",
++      "urls": ["https://xspeeds.eu/"],
++      "fields": [
++        {
++          "name": "passkey",
++          "label": "Secret key",
++          "help": "Go to https://www.xspeeds.eu/getrss.php and select Feed Type: Download Link, then Generate Feed. Copy the VALUE between secret_key=VALUE&feedtype.",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?type=rss&secret_key={passkey}&id={id}",
++      "searchUrls": []
++    },
++    {
++      "id": "xwtorrents",
++      "name": "XtremeWrestlingTorrents",
++      "privacy": "private",
++      "urls": ["https://xtremewrestlingtorrents.net/"],
++      "fields": [
++        {
++          "name": "rsskey",
++          "label": "RSS key",
++          "help": "Go to your profile and copy your RSS key",
++          "secret": true
++        }
++      ],
++      "infoUrl": "/details.php?id={id}",
++      "downloadUrl": "/download.php?id={id}&name={releaseName}.torrent&{rsskey}",
++      "searchUrls": []
++    }
++  ]
++}
+diff --git a/packages/core/src/sites/site-service.ts b/packages/core/src/sites/site-service.ts
+new file mode 100644
+index 0000000..a8b359f
+--- /dev/null
++++ b/packages/core/src/sites/site-service.ts
+@@ -0,0 +1,524 @@
++import { randomUUID } from 'node:crypto';
++import type {
++  SiteDTO,
++  SiteField,
++  SiteInput,
++  SiteMapping,
++  SitePresetDTO,
++  SiteTestHit,
++  SiteTestResult,
++} from '@draxmax/shared';
++import { siteSchema } from '@draxmax/shared';
++import type { Database } from '../db/database.ts';
++import { CoreError } from '../errors.ts';
++import type { CoreEvents } from '../events.ts';
++import { fetchBytes } from '../net/http.ts';
++import type { SearchResult, SearchSource } from '../missing/sources.ts';
++import type { SecretCipher } from '../settings/settings.ts';
++import { parseSearch, type SiteHit } from './parse.ts';
++import presetsFile from './presets.json' with { type: 'json' };
++import { fill, placeholders, redactSecrets, TemplateError } from './templates.ts';
++
++/** Fetches a search page: body text, content type and HTTP status. */
++export type SiteFetch = (
++  url: string,
++  headers: Record<string, string>,
++) => Promise<{ body: string; contentType: string; status: number }>;
++
++export interface SiteServiceDeps {
++  db: Database;
++  cipher: SecretCipher | null;
++  events: CoreEvents;
++  /** Injected for tests. */
++  fetch?: SiteFetch;
++  /** Spacing between searches on one site (tests use 0). Private trackers dislike bursts. */
++  intervalMs?: number;
++}
++
++interface Secrets {
++  values: Record<string, string>;
++  /** Normalised Cookie header ("a=b; c=d"). */
++  cookies: string;
++  headers: Record<string, string>;
++}
++
++interface SiteRow {
++  id: string;
++  name: string;
++  preset: string | null;
++  enabled: boolean;
++  baseUrls: string[];
++  searchUrls: string[];
++  infoUrl: string;
++  downloadUrl: string;
++  mapping: SiteMapping;
++  fields: SiteField[];
++  secrets: Secrets;
++  lastTest: SiteTestResult | null;
++  createdAt: string;
++  updatedAt: string;
++}
++
++const EMPTY: Secrets = { values: {}, cookies: '', headers: {} };
++/** Headers users may not set (transport-level, or managed by us). */
++const FORBIDDEN_HEADERS = new Set([
++  'host',
++  'content-length',
++  'connection',
++  'transfer-encoding',
++  'cookie',
++  'user-agent',
++]);
++const MAX_RESPONSE = 4 * 1024 * 1024;
++
++/** "Cookie: a=b; c=d", "a=b\nc=d" → "a=b; c=d". Values are kept as given. */
++export function normalizeCookies(input: string): string {
++  return input
++    .replace(/^\s*cookie\s*:/i, '')
++    .split(/[;\n]/)
++    .map((p) => p.trim())
++    .filter((p) => /^[^=\s;]+=.*/.test(p))
++    .join('; ');
++}
++
++/** "Name: value" lines → record (invalid or forbidden lines are rejected). */
++export function parseHeaders(input: string): Record<string, string> {
++  const out: Record<string, string> = {};
++  for (const line of input
++    .split('\n')
++    .map((l) => l.trim())
++    .filter(Boolean)) {
++    const m = /^([A-Za-z0-9-]{1,64})\s*:\s*(.*)$/.exec(line);
++    if (!m) throw new CoreError('invalid_input', `Not a header line: "${line.slice(0, 40)}"`);
++    if (FORBIDDEN_HEADERS.has(m[1]!.toLowerCase()))
++      throw new CoreError('invalid_input', `The ${m[1]} header can't be set here`);
++    if (/[\r\n]/.test(m[2]!))
++      throw new CoreError('invalid_input', 'Header values must be one line');
++    out[m[1]!] = m[2]!;
++  }
++  return out;
++}
++
++const hostOf = (u: string) => {
++  try {
++    return new URL(u).host.toLowerCase();
++  } catch {
++    return '';
++  }
++};
++
++type Raw = Record<string, unknown>;
++
++/**
++ * Tracker sites the user configures (credentials, search URLs, link patterns). They act as
++ * search sources for missing episodes, and their cookies are sent to their own hosts when
++ * RSS feeds or torrent links point there.
++ */
++export class SiteService {
++  private readonly pacers = new Map<string, Promise<unknown>>();
++  private readonly last = new Map<string, number>();
++
++  constructor(private readonly deps: SiteServiceDeps) {}
++
++  // --- Storage ---------------------------------------------------------------------
++
++  private seal(s: Secrets): string {
++    const json = JSON.stringify(s);
++    return this.deps.cipher ? `enc:${this.deps.cipher.encrypt(json)}` : json;
++  }
++
++  private unseal(v: string): Secrets {
++    if (!v) return { ...EMPTY, values: {}, headers: {} };
++    try {
++      const json = v.startsWith('enc:') ? (this.deps.cipher?.decrypt(v.slice(4)) ?? '') : v;
++      const s = JSON.parse(json) as Partial<Secrets>;
++      return { values: s.values ?? {}, cookies: s.cookies ?? '', headers: s.headers ?? {} };
++    } catch {
++      // Key file lost: the user re-enters credentials.
++      return { values: {}, cookies: '', headers: {} };
++    }
++  }
++
++  private fromRow(r: Raw): SiteRow {
++    const j = <T>(v: unknown, d: T): T => {
++      try {
++        return v ? (JSON.parse(v as string) as T) : d;
++      } catch {
++        return d;
++      }
++    };
++    return {
++      id: r.id as string,
++      name: r.name as string,
++      preset: (r.preset as string | null) ?? null,
++      enabled: r.enabled === 1,
++      baseUrls: j<string[]>(r.base_urls, []),
++      searchUrls: j<string[]>(r.search_urls, []),
++      infoUrl: r.info_url as string,
++      downloadUrl: r.download_url as string,
++      mapping: j<SiteMapping>(r.mapping, { format: 'auto' }),
++      fields: j<SiteField[]>(r.fields, []),
++      secrets: this.unseal(r.secrets as string),
++      lastTest: j<SiteTestResult | null>(r.last_test, null),
++      createdAt: r.created_at as string,
++      updatedAt: r.updated_at as string,
++    };
++  }
++
++  private rows(): SiteRow[] {
++    return (
++      this.deps.db.prepare('SELECT * FROM sites ORDER BY name COLLATE NOCASE').all() as Raw[]
++    ).map((r) => this.fromRow(r));
++  }
++
++  private row(id: string): SiteRow {
++    const r = this.deps.db.prepare('SELECT * FROM sites WHERE id = ?').get(id) as Raw | undefined;
++    if (!r) throw new CoreError('not_found', 'Site not found');
++    return this.fromRow(r);
++  }
++
++  private save(s: SiteRow): void {
++    this.deps.db
++      .prepare(
++        `INSERT INTO sites (id, name, preset, enabled, base_urls, search_urls, info_url, download_url, mapping, fields, secrets, last_test, created_at, updated_at)
++         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++         ON CONFLICT(id) DO UPDATE SET name = excluded.name, preset = excluded.preset, enabled = excluded.enabled,
++           base_urls = excluded.base_urls, search_urls = excluded.search_urls, info_url = excluded.info_url,
++           download_url = excluded.download_url, mapping = excluded.mapping, fields = excluded.fields,
++           secrets = excluded.secrets, last_test = excluded.last_test, updated_at = excluded.updated_at`,
++      )
++      .run(
++        s.id,
++        s.name,
++        s.preset,
++        s.enabled ? 1 : 0,
++        JSON.stringify(s.baseUrls),
++        JSON.stringify(s.searchUrls),
++        s.infoUrl,
++        s.downloadUrl,
++        JSON.stringify(s.mapping),
++        JSON.stringify(s.fields),
++        this.seal(s.secrets),
++        s.lastTest ? JSON.stringify(s.lastTest) : null,
++        s.createdAt,
++        s.updatedAt,
++      );
++    this.deps.events.emit('sites:updated', null);
++  }
++
++  private toDTO(s: SiteRow): SiteDTO {
++    return {
++      id: s.id,
++      name: s.name,
++      preset: s.preset,
++      enabled: s.enabled,
++      baseUrls: s.baseUrls,
++      searchUrls: s.searchUrls,
++      infoUrl: s.infoUrl,
++      downloadUrl: s.downloadUrl,
++      mapping: s.mapping,
++      fields: s.fields,
++      secretsSet: {
++        values: Object.fromEntries(Object.entries(s.secrets.values).map(([k, v]) => [k, v !== ''])),
++        cookies: s.secrets.cookies ? s.secrets.cookies.split(';').length : 0,
++        headers: Object.keys(s.secrets.headers).length,
++      },
++      lastTest: s.lastTest,
++      createdAt: s.createdAt,
++      updatedAt: s.updatedAt,
++    };
++  }
++
++  // --- CRUD ------------------------------------------------------------------------
++
++  list(): SiteDTO[] {
++    return this.rows().map((s) => this.toDTO(s));
++  }
++
++  get(id: string): SiteDTO {
++    return this.toDTO(this.row(id));
++  }
++
++  presets(): SitePresetDTO[] {
++    return (presetsFile as { presets: SitePresetDTO[] }).presets;
++  }
++
++  /** Creates (no id) or updates a site. Secrets: omitted = keep, null = clear, value = set. */
++  saveSite(input: SiteInput, id?: string): SiteDTO {
++    const v = siteSchema.parse(input);
++    const prev = id ? this.row(id) : null;
++    const hosts = new Set(v.baseUrls.map(hostOf));
++    // Templates may only point at the site's own hosts, so credentials can't leak elsewhere.
++    for (const t of [...v.searchUrls, v.infoUrl, v.downloadUrl].filter(Boolean)) {
++      if (/^[a-z][a-z0-9+.-]*:/i.test(t)) {
++        const h = hostOf(t.replace(/\{[^}]+\}/g, 'x'));
++        if (!/^https?:/i.test(t) || !hosts.has(h))
++          throw new CoreError('invalid_input', `${t.slice(0, 60)} is not on this site's URLs`);
++      }
++    }
++    const secrets: Secrets = prev
++      ? {
++          values: { ...prev.secrets.values },
++          cookies: prev.secrets.cookies,
++          headers: { ...prev.secrets.headers },
++        }
++      : { values: {}, cookies: '', headers: {} };
++    for (const [k, val] of Object.entries(v.values ?? {})) secrets.values[k] = val?.trim() ?? '';
++    secrets.values = Object.fromEntries(Object.entries(secrets.values).filter(([, x]) => x));
++    if (v.cookies !== undefined) secrets.cookies = v.cookies ? normalizeCookies(v.cookies) : '';
++    if (v.headers !== undefined) secrets.headers = v.headers ? parseHeaders(v.headers) : {};
++    const now = new Date().toISOString();
++    const row: SiteRow = {
++      id: prev?.id ?? randomUUID(),
++      name: v.name,
++      preset: v.preset,
++      enabled: v.enabled,
++      baseUrls: v.baseUrls,
++      searchUrls: v.searchUrls,
++      infoUrl: v.infoUrl,
++      downloadUrl: v.downloadUrl,
++      mapping: v.mapping,
++      fields: v.fields,
++      secrets,
++      lastTest: prev?.lastTest ?? null,
++      createdAt: prev?.createdAt ?? now,
++      updatedAt: now,
++    };
++    this.save(row);
++    return this.toDTO(row);
++  }
++
++  setEnabled(id: string, enabled: boolean): SiteDTO {
++    const row = this.row(id);
++    row.enabled = enabled;
++    row.updatedAt = new Date().toISOString();
++    this.save(row);
++    return this.toDTO(row);
++  }
++
++  delete(id: string): void {
++    this.deps.db.prepare('DELETE FROM sites WHERE id = ?').run(id);
++    this.deps.events.emit('sites:updated', null);
++  }
++
++  // --- Requests ----------------------------------------------------------------------
++
++  /** Cookies and headers for a URL on one of the enabled sites' hosts (else none). */
++  headersFor(url: string): Record<string, string> {
++    const h = hostOf(url);
++    if (!h) return {};
++    const site = this.rows().find((s) => s.enabled && s.baseUrls.some((b) => hostOf(b) === h));
++    return site ? this.requestHeaders(site) : {};
++  }
++
++  /** Whether a URL is on a configured site (its torrent links may be on the local network). */
++  ownsUrl(url: string): boolean {
++    const h = hostOf(url);
++    return !!h && this.rows().some((s) => s.enabled && s.baseUrls.some((b) => hostOf(b) === h));
++  }
++
++  private requestHeaders(s: SiteRow): Record<string, string> {
++    return {
++      ...s.secrets.headers,
++      ...(s.secrets.cookies ? { cookie: s.secrets.cookies } : {}),
++    };
++  }
++
++  private secretValues(s: SiteRow): string[] {
++    return [
++      ...Object.values(s.secrets.values),
++      ...s.secrets.cookies.split(';').map((c) => c.split('=').slice(1).join('=').trim()),
++      ...Object.values(s.secrets.headers).map((v) => v.replace(/^(Bearer|Basic|Token)\s+/i, '')),
++    ];
++  }
++
++  private async fetchPage(url: string, headers: Record<string, string>) {
++    if (this.deps.fetch) return this.deps.fetch(url, headers);
++    const res = await fetchBytes(url, {
++      headers: {
++        accept: 'application/json, application/rss+xml, text/html;q=0.9, */*;q=0.5',
++        ...headers,
++      },
++      maxBytes: MAX_RESPONSE,
++      timeoutMs: 30_000,
++      acceptErrors: true,
++    });
++    return {
++      body: Buffer.from(res.body).toString('utf8'),
++      contentType: res.contentType,
++      status: res.status,
++    };
++  }
++
++  /** Serialises and spaces requests per site. */
++  private paced<T>(siteId: string, fn: () => Promise<T>): Promise<T> {
++    const gap = this.deps.intervalMs ?? 4_000;
++    const prev = this.pacers.get(siteId) ?? Promise.resolve();
++    const run = prev.then(async () => {
++      const wait = (this.last.get(siteId) ?? 0) + gap - Date.now();
++      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
++      this.last.set(siteId, Date.now());
++      return fn();
++    });
++    this.pacers.set(
++      siteId,
++      run.catch(() => undefined),
++    );
++    return run;
++  }
++
++  /** Download link for a hit: the response's own link, or the site's template. */
++  private downloadLink(s: SiteRow, hit: SiteHit): string | null {
++    const base = s.baseUrls[0]!;
++    if (hit.link) return new URL(hit.link, base).toString();
++    if (!s.downloadUrl || !hit.id) return null;
++    return new URL(
++      fill(s.downloadUrl, {
++        ...s.secrets.values,
++        id: hit.id,
++        releaseName: hit.title,
++        title: hit.title,
++        ...(hit.groupId ? { groupId: hit.groupId } : {}),
++      }),
++      base,
++    ).toString();
++  }
++
++  /** Runs one search template; returns parsed hits plus what's needed to explain failures. */
++  private async searchOnce(s: SiteRow, template: string, query: string) {
++    const url = new URL(fill(template, { ...s.secrets.values, query }), s.baseUrls[0]).toString();
++    if (!s.baseUrls.some((b) => hostOf(b) === hostOf(url)))
++      throw new CoreError('invalid_input', 'Search URL is not on this site');
++    const res = await this.paced(s.id, () => this.fetchPage(url, this.requestHeaders(s)));
++    if (res.status >= 400) return { url, res, parsed: null, error: `HTTP ${res.status}` };
++    if (/<input[^>]+type\s*=\s*["']?password/i.test(res.body) && !/json/i.test(res.contentType))
++      return { url, res, parsed: null, error: 'Got a login page: check the session cookies' };
++    try {
++      const parsed = await parseSearch(res.body, res.contentType, {
++        infoUrl: s.infoUrl,
++        mapping: s.mapping,
++      });
++      return { url, res, parsed, error: null };
++    } catch (err) {
++      return { url, res, parsed: null, error: (err as Error).message };
++    }
++  }
++
++  /** "Test search" from the UI: tries each search URL until one gives results. */
++  async test(id: string, query: string): Promise<SiteTestResult> {
++    const s = this.row(id);
++    const secrets = this.secretValues(s);
++    const mask = (t: string) => redactSecrets(t, secrets);
++    let result: SiteTestResult | null = null;
++    if (!s.searchUrls.length)
++      result = this.testResult({
++        ok: false,
++        url: '',
++        error: 'Add a search URL with {query} first',
++      });
++    for (const template of s.searchUrls) {
++      try {
++        const missing = placeholders(template).filter((n) => n !== 'query' && !s.secrets.values[n]);
++        if (missing.length) throw new TemplateError(`No value for {${missing.join('}, {')}}`);
++        const { url, res, parsed, error } = await this.searchOnce(s, template, query);
++        const hits: SiteTestHit[] = [];
++        let linkError: string | null = null;
++        for (const h of parsed?.hits ?? []) {
++          let link: string | null = null;
++          try {
++            link = this.downloadLink(s, h);
++          } catch (err) {
++            linkError ??= `Download link: ${(err as Error).message}`;
++          }
++          hits.push({
++            title: h.title,
++            id: h.id,
++            seeders: h.seeders,
++            size: h.size,
++            downloadUrl: link && mask(link),
++          });
++        }
++        const ok = !error && hits.length > 0;
++        result = this.testResult({
++          ok,
++          url: mask(url),
++          status: res.status,
++          format: parsed?.format ?? null,
++          mapping: parsed?.mapping ?? null,
++          results: hits.slice(0, 25),
++          total: hits.length,
++          error: error ?? (hits.length ? linkError : 'No results found in the response'),
++          excerpt: ok ? null : mask(res.body.slice(0, 1500)),
++        });
++        if (ok) break;
++      } catch (err) {
++        result = this.testResult({ ok: false, url: mask(template), error: (err as Error).message });
++      }
++    }
++    s.lastTest = result;
++    s.updatedAt = new Date().toISOString();
++    this.save(s);
++    return result!;
++  }
++
++  private testResult(p: Partial<SiteTestResult> & { ok: boolean; url: string }): SiteTestResult {
++    return {
++      status: null,
++      format: null,
++      mapping: null,
++      results: [],
++      total: 0,
++      error: null,
++      excerpt: null,
++      at: new Date().toISOString(),
++      ...p,
++    };
++  }
++
++  /** One search source per enabled site with a search URL (for missing episodes). */
++  sources(): SearchSource[] {
++    return this.rows()
++      .filter((s) => s.enabled && s.searchUrls.length > 0)
++      .map((s) => ({
++        name: `Site: ${s.name}`,
++        animeOnly: false,
++        search: async (query: string): Promise<SearchResult[]> => {
++          let lastError: string | null = null;
++          for (const template of s.searchUrls) {
++            let r;
++            try {
++              r = await this.searchOnce(s, template, query);
++            } catch (err) {
++              lastError = (err as Error).message;
++              continue;
++            }
++            if (r.error || !r.parsed) {
++              lastError = r.error;
++              continue;
++            }
++            const out = r.parsed.hits.flatMap((h): SearchResult[] => {
++              try {
++                const url = this.downloadLink(s, h);
++                return url
++                  ? [
++                      {
++                        title: h.title,
++                        url,
++                        seeders: h.seeders,
++                        size: h.size,
++                        source: `Site: ${s.name}`,
++                      },
++                    ]
++                  : [];
++              } catch {
++                return [];
++              }
++            });
++            if (out.length) return out;
++          }
++          if (lastError) throw new Error(lastError);
++          return [];
++        },
++      }));
++  }
++}
+diff --git a/packages/core/src/sites/sites.test.ts b/packages/core/src/sites/sites.test.ts
+new file mode 100644
+index 0000000..55bc455
+--- /dev/null
++++ b/packages/core/src/sites/sites.test.ts
+@@ -0,0 +1,291 @@
++import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
++import type { RuleInput, SiteInput } from '@draxmax/shared';
++import { createCore, type Core } from '../core.ts';
++import { FakeEngine, makeTorrentFile } from '../testing/index.ts';
++import { parseSearch, parseSize } from './parse.ts';
++import { normalizeCookies, parseHeaders } from './site-service.ts';
++import { fill, redactSecrets, templateToRegex, TemplateError } from './templates.ts';
++
++describe('templates', () => {
++  it('fills placeholders with URL-encoded values and names missing ones', () => {
++    expect(
++      fill('/search?q={query}&pk={passkey}', { query: 'Show S01 & more', passkey: 'a/b' }),
++    ).toBe('/search?q=Show%20S01%20%26%20more&pk=a%2Fb');
++    expect(() => fill('/download.php?id={id}&passkey={passkey}', { id: 1 })).toThrow(TemplateError);
++    expect(() => fill('/x?{a}{b}', {})).toThrow('No value for {a}, {b}');
++  });
++
++  it('turns torrent-page patterns into link matchers', () => {
++    const sb = templateToRegex('/torrent/{id}/')!;
++    expect(sb.exec('/torrent/2825996/')?.groups?.id).toBe('2825996');
++    expect(sb.exec('https://superbits.org/torrent/12')?.groups?.id).toBe('12');
++    const q = templateToRegex('/torrents.php?id={groupId}&torrentid={id}')!;
++    expect(q.exec('torrents.php?id=5&amp;torrentid=77')?.groups?.id).toBe('77');
++    expect(
++      templateToRegex('https://x.org/details.php?id={id}')!.exec('/details.php?id=9')?.groups?.id,
++    ).toBe('9');
++    expect(sb.exec('/forum/viewtorrent/5/')).toBeNull();
++    expect(templateToRegex('/no-id')).toBeNull();
++  });
++
++  it('masks secrets and parses sizes, cookies and headers', () => {
++    expect(redactSecrets('passkey=abcd1234&x', ['abcd1234'])).toBe('passkey=•••&x');
++    expect(parseSize('1.5 GiB')).toBe(Math.round(1.5 * 1024 ** 3));
++    expect(parseSize('700 MB')).toBe(700e6);
++    expect(normalizeCookies('Cookie: uid=1; pass=abc')).toBe('uid=1; pass=abc');
++    expect(normalizeCookies('uid=1\npass=abc\njunk')).toBe('uid=1; pass=abc');
++    expect(parseHeaders('Authorization: Bearer x\nX-Api-Key: y')).toEqual({
++      Authorization: 'Bearer x',
++      'X-Api-Key': 'y',
++    });
++    expect(() => parseHeaders('Host: evil')).toThrow(/can't be set/);
++  });
++});
++
++describe('search response parsing', () => {
++  it('detects JSON result lists and their fields', async () => {
++    const body = JSON.stringify({
++      status: 'ok',
++      data: {
++        total: 2,
++        torrents: [
++          { id: 11, name: 'Show.S01E01.1080p.WEB-GRP', seeders: '12', size: 1234567 },
++          { id: 12, name: 'Show.S01E02.1080p.WEB-GRP', seeders: 3, size: '1.2 GB' },
++        ],
++      },
++    });
++    const r = await parseSearch(body, 'application/json', {
++      infoUrl: '',
++      mapping: { format: 'auto' },
++    });
++    expect(r.format).toBe('json');
++    expect(r.mapping).toMatchObject({
++      list: 'data.torrents',
++      title: 'name',
++      id: 'id',
++      seeders: 'seeders',
++      size: 'size',
++    });
++    expect(r.hits).toEqual([
++      {
++        title: 'Show.S01E01.1080p.WEB-GRP',
++        id: '11',
++        groupId: null,
++        link: null,
++        seeders: 12,
++        size: 1234567,
++      },
++      {
++        title: 'Show.S01E02.1080p.WEB-GRP',
++        id: '12',
++        groupId: null,
++        link: null,
++        seeders: 3,
++        size: 1.2e9,
++      },
++    ]);
++    // Configured paths win over detection.
++    const mapped = await parseSearch(
++      JSON.stringify({ rows: [{ t: 'A', key: 'x1', dl: '/dl/x1' }] }),
++      '',
++      {
++        infoUrl: '',
++        mapping: { format: 'json', list: 'rows', title: 't', id: 'key', download: 'dl' },
++      },
++    );
++    expect(mapped.hits[0]).toMatchObject({ title: 'A', id: 'x1', link: '/dl/x1' });
++  });
++
++  it('reads HTML search pages by the torrent-page link pattern', async () => {
++    const html = `<html><body><table>
++      <tr><td><a href="/torrent/101/" title="Show.S01E01.720p">Show.S01E01.720p</a></td>
++          <td class="seeders">15</td><td>1.40 GiB</td>
++          <td><a href="/download.php?id=101&amp;passkey=x">DL</a></td></tr>
++      <tr><td><a href="https://superbits.org/torrent/102/"><img src="x.png"></a>
++          <a href="/torrent/102/">Show &amp; Tell S01E02</a></td><td title="Seeders">4</td></tr>
++      <tr><td><a href="/forum/1">Not a torrent</a></td></tr>
++    </table></body></html>`;
++    const r = await parseSearch(html, 'text/html', {
++      infoUrl: '/torrent/{id}/',
++      mapping: { format: 'auto' },
++    });
++    expect(r.format).toBe('html');
++    expect(r.hits.map((h) => [h.id, h.title, h.seeders])).toEqual([
++      ['101', 'Show.S01E01.720p', 15],
++      ['102', 'Show & Tell S01E02', 4],
++    ]);
++    expect(r.hits[0]!.size).toBe(Math.round(1.4 * 1024 ** 3));
++    expect(r.hits[0]!.link).toBe('/download.php?id=101&passkey=x');
++  });
++
++  it('reads RSS / Torznab responses', async () => {
++    const xml = `<?xml version="1.0"?><rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed"><channel><title>t</title>
++      <item><title>Show S01E03</title><guid>g</guid><link>https://t.example/dl/3.torrent</link>
++      <torznab:attr name="seeders" value="9"/></item></channel></rss>`;
++    const r = await parseSearch(xml, 'application/rss+xml', {
++      infoUrl: '',
++      mapping: { format: 'auto' },
++    });
++    expect(r.format).toBe('rss');
++    expect(r.hits[0]).toMatchObject({
++      title: 'Show S01E03',
++      link: 'https://t.example/dl/3.torrent',
++      seeders: 9,
++    });
++  });
++});
++
++describe('SiteService', () => {
++  let dir: string;
++  let core: Core;
++  const pages = new Map<string, { body: string; contentType: string; status?: number }>();
++  const siteFetch = vi.fn(async (url: string, headers: Record<string, string>) => {
++    const p = pages.get(new URL(url).pathname);
++    void headers;
++    return p
++      ? { body: p.body, contentType: p.contentType, status: p.status ?? 200 }
++      : { body: 'not found', contentType: 'text/plain', status: 404 };
++  });
++  const fetchTorrent = vi.fn(async () =>
++    makeTorrentFile('Show S01E02', [{ path: ['e2.mkv'], length: 10 }]),
++  );
++
++  const superbits = (extra: Partial<SiteInput> = {}): SiteInput => ({
++    name: 'SuperBits',
++    preset: 'superbits',
++    baseUrls: ['https://superbits.org/'],
++    searchUrls: ['/api/v1/torrents?searchText={query}', '/search?search={query}'],
++    infoUrl: '/torrent/{id}/',
++    downloadUrl: '/download.php?id={id}&passkey={passkey}',
++    fields: [{ name: 'passkey', label: 'Passkey' }],
++    values: { passkey: 'PASSKEY123' },
++    cookies: 'Cookie: sbid=SESSION999; theme=dark',
++    ...extra,
++  });
++
++  beforeEach(() => {
++    pages.clear();
++    siteFetch.mockClear();
++    fetchTorrent.mockClear();
++    dir = mkdtempSync(join(tmpdir(), 'draxmax-sites-'));
++    core = createCore({
++      configPath: join(dir, 'c'),
++      downloadPath: join(dir, 'd'),
++      engine: new FakeEngine(),
++      env: {},
++      noSchedulers: true,
++      siteFetch,
++      missingFetch: { fetchText: async () => '[]', fetchTorrent },
++    });
++    core.settings.update({ missingUseNyaa: false, missingUseAnimeTosho: false });
++  });
++  afterEach(async () => {
++    await core.shutdown();
++    rmSync(dir, { recursive: true, force: true });
++  });
++
++  it('stores credentials encrypted and only reports which are set', () => {
++    const site = core.sites.saveSite(superbits());
++    expect(site.secretsSet).toEqual({ values: { passkey: true }, cookies: 2, headers: 0 });
++    expect(JSON.stringify(site)).not.toMatch(/PASSKEY123|SESSION999/);
++    const raw = core.db.prepare('SELECT secrets FROM sites').get() as { secrets: string };
++    expect(raw.secrets).toMatch(/^enc:/);
++    expect(raw.secrets).not.toMatch(/PASSKEY123|SESSION999/);
++    // Omitted secrets are kept, null clears.
++    const kept = core.sites.saveSite(
++      { ...superbits(), values: undefined, cookies: undefined },
++      site.id,
++    );
++    expect(kept.secretsSet.values.passkey).toBe(true);
++    expect(core.sites.saveSite({ ...superbits(), cookies: null }, site.id).secretsSet.cookies).toBe(
++      0,
++    );
++  });
++
++  it('refuses templates that point at other hosts', () => {
++    expect(() =>
++      core.sites.saveSite(superbits({ downloadUrl: 'https://evil.example/x?pk={passkey}' })),
++    ).toThrow(/not on this site/);
++  });
++
++  it('tests searches, falling back to the next URL, with secrets masked', async () => {
++    pages.set('/api/v1/torrents', {
++      body: '<html><form><input type="password"></form></html>',
++      contentType: 'text/html',
++    });
++    pages.set('/search', {
++      body: '<table><tr><td><a href="/torrent/2825996/">Show.S01E02.1080p</a></td><td class="seed">8</td></tr></table>',
++      contentType: 'text/html; charset=utf-8',
++    });
++    const site = core.sites.saveSite(superbits());
++    const res = await core.sites.test(site.id, 'Show S01');
++    expect(res).toMatchObject({ ok: true, format: 'html', total: 1, error: null });
++    expect(res.results[0]).toEqual({
++      title: 'Show.S01E02.1080p',
++      id: '2825996',
++      seeders: 8,
++      size: null,
++      downloadUrl: 'https://superbits.org/download.php?id=2825996&passkey=•••',
++    });
++    // Cookies went to the site; the passkey never appears in the stored result.
++    expect(siteFetch.mock.calls[0]![1]).toMatchObject({ cookie: 'sbid=SESSION999; theme=dark' });
++    expect(JSON.stringify(core.sites.get(site.id).lastTest)).not.toMatch(/PASSKEY123|SESSION999/);
++  });
++
++  it('feeds missing-episode search and downloads with the site cookies', async () => {
++    pages.set('/api/v1/torrents', {
++      body: JSON.stringify({
++        torrents: [{ id: 7, name: '[SubsPlease] Chii Fuyo - 02 (720p) [AA].mkv', seeders: 30 }],
++      }),
++      contentType: 'application/json',
++    });
++    core.sites.saveSite(superbits());
++    expect(core.sites.headersFor('https://superbits.org/rss.php')).toEqual({
++      cookie: 'sbid=SESSION999; theme=dark',
++    });
++    expect(core.sites.headersFor('https://other.example/')).toEqual({});
++
++    const show = join(dir, 'Anime', 'Chii Fuyo', 'S01');
++    mkdirSync(show, { recursive: true });
++    writeFileSync(join(show, '[SubsPlease] Chii Fuyo - 01 (720p) [AA].mkv'), '');
++    const rule: RuleInput = {
++      name: 'Chii Fuyo',
++      enabled: true,
++      priority: 0,
++      mustContain: ['Chii Fuyo 720'],
++      mustNotContain: [],
++      useRegex: false,
++      smartEpisodeFilter: false,
++      assignedFeedIds: [],
++      tags: [],
++      addPaused: false,
++      savePath: show,
++    };
++    await core.rss.saveRule(rule);
++    await core.missing.run({ force: true });
++
++    expect(core.missing.get().sources).toContain('Site: SuperBits');
++    expect(core.missing.get().shows[0]).toMatchObject({ added: [2] });
++    expect(fetchTorrent).toHaveBeenCalledWith(
++      'https://superbits.org/download.php?id=7&passkey=PASSKEY123',
++      {
++        allowPrivate: true,
++        headers: { cookie: 'sbid=SESSION999; theme=dark' },
++      },
++    );
++  });
++
++  it('ships presets from the autobrr definitions', () => {
++    const sb = core.sites.presets().find((p) => p.id === 'superbits')!;
++    expect(sb).toMatchObject({
++      name: 'SuperBits',
++      infoUrl: '/torrent/{id}/',
++      downloadUrl: '/download.php?id={id}&passkey={passkey}',
++    });
++    expect(sb.fields.map((f) => f.name)).toEqual(['passkey']);
++    expect(core.sites.presets().length).toBeGreaterThan(100);
++  });
++});
+diff --git a/packages/core/src/sites/templates.ts b/packages/core/src/sites/templates.ts
+new file mode 100644
+index 0000000..fa782e0
+--- /dev/null
++++ b/packages/core/src/sites/templates.ts
+@@ -0,0 +1,77 @@
++/**
++ * URL templates for sites: `{name}` placeholders, each value URL-encoded on substitution.
++ * Variables: `query` (search text), `id` (torrent id), `releaseName`/`title`, `groupId`,
++ * and every credential field (passkey, rsskey, authkey, torrent_pass, …).
++ */
++
++export class TemplateError extends Error {}
++
++const PLACEHOLDER = /\{([A-Za-z0-9_.]+)\}/g;
++
++/** Placeholder names used in a template. */
++export function placeholders(template: string): string[] {
++  return [...template.matchAll(PLACEHOLDER)].map((m) => m[1]!);
++}
++
++/** Fills a template; throws {@link TemplateError} naming any variable without a value. */
++export function fill(template: string, vars: Record<string, string | number | undefined>): string {
++  const missing = placeholders(template).filter((n) => vars[n] === undefined || vars[n] === '');
++  if (missing.length)
++    throw new TemplateError(`No value for {${[...new Set(missing)].join('}, {')}}`);
++  return template.replace(PLACEHOLDER, (_, n: string) => encodeURIComponent(String(vars[n])));
++}
++
++/** Resolves a (possibly relative) filled template against a base URL. */
++export function resolveUrl(
++  template: string,
++  base: string,
++  vars: Record<string, string | number | undefined>,
++): string {
++  return new URL(fill(template, vars), base).toString();
++}
++
++/**
++ * Turns a torrent-page template into a regex that finds such links in HTML and captures the
++ * id (`/torrent/{id}/` → /\/torrent\/(?<id>\d+)\/?/). Other placeholders match one path or
++ * query segment. Works for absolute and relative hrefs.
++ */
++export function templateToRegex(template: string): RegExp | null {
++  if (!template.includes('{id}')) return null;
++  let path = template;
++  try {
++    // Absolute templates: keep only path + query, hrefs may be relative.
++    if (/^https?:\/\//i.test(path)) {
++      const u = new URL(path.replace(PLACEHOLDER, 'PLACEHOLDER_$1'));
++      path = (u.pathname + u.search).replace(/PLACEHOLDER_([A-Za-z0-9_.]+)/g, '{$1}');
++    }
++  } catch {
++    return null;
++  }
++  let first = true;
++  const source = path
++    .split(PLACEHOLDER)
++    .map((part, i) => {
++      // Literal text; "&" may be written "&amp;" in HTML.
++      if (i % 2 === 0)
++        return part.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&').replace(/&/g, '(?:&|&amp;)');
++      if (part === 'id' && first) {
++        first = false;
++        return '(?<id>[A-Za-z0-9_-]+)';
++      }
++      return '[^/?&#"\'<>]*';
++    })
++    .join('')
++    // A trailing slash is optional; the leading one may be missing in relative links
++    // ("torrents.php?id=1"), but the path must still start there or right after a "/".
++    .replace(/\\\/$/, '\\/?')
++    .replace(/^\\\//, '(?:^|\\/)');
++  return new RegExp(source);
++}
++
++/** Every value that must never appear in logs or excerpts. */
++export function redactSecrets(text: string, secrets: string[]): string {
++  let out = text;
++  for (const s of secrets.filter((x) => x.length >= 4))
++    out = out.split(s).join('•••').split(encodeURIComponent(s)).join('•••');
++  return out;
++}
+diff --git a/packages/shared/src/api.ts b/packages/shared/src/api.ts
+index 92cb848..511ad70 100644
+--- a/packages/shared/src/api.ts
++++ b/packages/shared/src/api.ts
+@@ -89,7 +89,8 @@ export type ServerEvent =
+   | { type: 'rss:match'; ruleName: string; title: string; status: 'added' | 'duplicate' }
+   | { type: 'stats:tick'; stats: StatsSnapshot }
+   | { type: 'upcoming:updated' }
+-  | { type: 'missing:updated' };
++  | { type: 'missing:updated' }
++  | { type: 'sites:updated' };
+ 
+ // --- M2: torrent controls, trackers, categories, settings ---------------------
+ 
+diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
+index 950cc97..0583386 100644
+--- a/packages/shared/src/index.ts
++++ b/packages/shared/src/index.ts
+@@ -2,5 +2,6 @@ export * from './models.ts';
+ export * from './api.ts';
+ export * from './stats.ts';
+ export * from './media.ts';
++export * from './sites.ts';
+ export const APP_NAME = 'DraxMax';
+ export const APP_VERSION = '0.1.0';
+diff --git a/packages/shared/src/sites.ts b/packages/shared/src/sites.ts
+new file mode 100644
+index 0000000..cec0841
+--- /dev/null
++++ b/packages/shared/src/sites.ts
+@@ -0,0 +1,103 @@
++import { z } from 'zod';
++
++const httpUrl = z.url({ protocol: /^https?$/ }).max(2048);
++const template = z.string().trim().max(2048);
++const fieldName = z.string().regex(/^[A-Za-z0-9_]{1,64}$/, 'Letters, digits and _ only');
++
++/** How search responses are read; omitted fields are auto-detected. */
++export const siteMappingSchema = z.object({
++  format: z.enum(['auto', 'json', 'html', 'rss']).default('auto'),
++  /** JSON dot paths ("data.torrents", "name", …). */
++  list: z.string().max(200).optional(),
++  title: z.string().max(200).optional(),
++  id: z.string().max(200).optional(),
++  groupId: z.string().max(200).optional(),
++  seeders: z.string().max(200).optional(),
++  size: z.string().max(200).optional(),
++  download: z.string().max(200).optional(),
++});
++export type SiteMapping = z.input<typeof siteMappingSchema>;
++
++export const siteFieldSchema = z.object({
++  name: fieldName,
++  label: z.string().trim().min(1).max(100),
++  help: z.string().max(300).optional(),
++});
++export type SiteField = z.infer<typeof siteFieldSchema>;
++
++/**
++ * Create/update body. Secrets follow the settings rule: omitted = keep, null = clear,
++ * string = replace. `cookies` is "name=value; name2=value2" (one Cookie header, or one
++ * pair per line); `headers` is one "Name: value" per line.
++ */
++export const siteSchema = z.object({
++  name: z.string().trim().min(1).max(100),
++  preset: z.string().max(100).nullable().default(null),
++  enabled: z.boolean().default(true),
++  baseUrls: z.array(httpUrl).min(1).max(20),
++  searchUrls: z.array(template.min(1)).max(10).default([]),
++  infoUrl: template.default(''),
++  downloadUrl: template.default(''),
++  mapping: siteMappingSchema.default({ format: 'auto' }),
++  fields: z.array(siteFieldSchema).max(20).default([]),
++  values: z.record(fieldName, z.string().max(4096).nullable()).optional(),
++  cookies: z.string().max(16_384).nullable().optional(),
++  headers: z.string().max(16_384).nullable().optional(),
++});
++export type SiteInput = z.input<typeof siteSchema>;
++
++export interface SiteTestHit {
++  title: string;
++  id: string | null;
++  seeders: number | null;
++  size: number | null;
++  /** Download link with secrets masked. */
++  downloadUrl: string | null;
++}
++
++export interface SiteTestResult {
++  ok: boolean;
++  /** Search URL that was tried (secrets masked). */
++  url: string;
++  status: number | null;
++  format: 'json' | 'html' | 'rss' | null;
++  /** Mapping that was used, to save with "Use these mappings". */
++  mapping: SiteMapping | null;
++  results: SiteTestHit[];
++  total: number;
++  error: string | null;
++  /** Start of the response (secrets masked), when nothing could be read. */
++  excerpt: string | null;
++  at: string;
++}
++
++export interface SiteDTO {
++  id: string;
++  name: string;
++  preset: string | null;
++  enabled: boolean;
++  baseUrls: string[];
++  searchUrls: string[];
++  infoUrl: string;
++  downloadUrl: string;
++  mapping: SiteMapping;
++  fields: SiteField[];
++  /** Which secrets are stored (values are never sent back). */
++  secretsSet: { values: Record<string, boolean>; cookies: number; headers: number };
++  lastTest: SiteTestResult | null;
++  createdAt: string;
++  updatedAt: string;
++}
++
++export interface SitePresetDTO {
++  id: string;
++  name: string;
++  privacy: string;
++  urls: string[];
++  fields: (SiteField & { secret: boolean })[];
++  infoUrl: string;
++  downloadUrl: string;
++  searchUrls: string[];
++}
++
++export const siteTestSchema = z.object({ query: z.string().trim().min(1).max(200) });
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index ded4592..1e492e3 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -22,6 +22,9 @@ importers:
+       '@playwright/test':
+         specifier: ^1.63.0
+         version: 1.63.0
++      '@types/js-yaml':
++        specifier: ^4.0.9
++        version: 4.0.9
+       '@types/node':
+         specifier: ^24.0.0
+         version: 24.19.1
+@@ -34,6 +37,9 @@ importers:
+       globals:
+         specifier: ^16.0.0
+         version: 16.5.0
++      js-yaml:
++        specifier: ^4.3.2
++        version: 4.3.2
+       prettier:
+         specifier: ^3.6.0
+         version: 3.9.9
+@@ -1273,6 +1279,9 @@ packages:
+   '@types/http-cache-semantics@4.2.0':
+     resolution: {integrity: sha512-L3LgimLHXtGkWikKnsPg0/VFx9OGZaC+eN1u4r+OB1XRqH3meBIAVC2zr1WdMH+RHmnRkqliQAOHNJ/E0j/e0Q==}
+ 
++  '@types/js-yaml@4.0.9':
++    resolution: {integrity: sha512-k4MGaQl5TGo/iipqb2UDG2UwjXziSWkh0uysQelTlJpX1qGlpUZYm8PnO4DxG1qBomtJUdYJ6qR6xdIah10JLg==}
++
+   '@types/json-schema@7.0.15':
+     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
+ 
+@@ -4811,6 +4820,8 @@ snapshots:
+ 
+   '@types/http-cache-semantics@4.2.0': {}
+ 
++  '@types/js-yaml@4.0.9': {}
++
+   '@types/json-schema@7.0.15': {}
+ 
+   '@types/keyv@3.1.4':
+diff --git a/scripts/gen-site-presets.mjs b/scripts/gen-site-presets.mjs
+new file mode 100644
+index 0000000..f0f7923
+--- /dev/null
++++ b/scripts/gen-site-presets.mjs
+@@ -0,0 +1,111 @@
++#!/usr/bin/env node
++/**
++ * Generates packages/core/src/sites/presets.json from the autobrr indexer definitions
++ * (https://github.com/autobrr/autobrr, internal/indexer/definitions) at a pinned commit.
++ *
++ * Only site facts are kept: name, URLs, privacy, the credential fields a user must enter
++ * and the torrent-page / download link templates. IRC settings, announce regexes and
++ * test data are not copied. Run: `node scripts/gen-site-presets.mjs`.
++ */
++import { writeFileSync } from 'node:fs';
++import yaml from 'js-yaml';
++
++const COMMIT = '478be9a9e9f9a92d046f13136c5daa30b6008ab1';
++const BASE = `https://raw.githubusercontent.com/autobrr/autobrr/${COMMIT}/internal/indexer/definitions`;
++const OUT = new URL('../packages/core/src/sites/presets.json', import.meta.url);
++
++// The repository's file list at that commit (the GitHub listing API isn't always reachable).
++const NAMES =
++  `0dayfiles abnormal acidlounge aither alpharatio animebytes animeworld ant bemaniso beyondhd
++bit-hdtv bithumen bitsexy bjshare brokenstones btfiles btn capybarabr cathode-ray-tube czteam danishbits
++danishbytes darkpeers dasunerwartete digitalcore dirtybytes docspedia emp enthralled f1carreras fappaizuri
++filelist finelite funfile fuzer gazellegames happyfappy hd-space hd-torrents hdb hdonly hebits homiehelpdesk
++huno immortalseed infinityhd insane iplay iptorrents itatorrents keepfrds locadora lst luminarr materialize
++midnightscene milkie myanonamouse ncore nebulance norbits nordicbytes nordicquality nyaa onlyencodes orpheus
++pbay peergarden phoenixproject pixelhd polishtracker privatesilverscreen ptfiles ptm ptp pussytorrents
++rastastugan red reelflix retroflix retromoviesclub retrotoonworld revolutiontt rocket-hd samaritano
++satclubbing scenehd seedcore seedpool seedpool_music shareisland sharewood simurg skipthecommercials speedapp
++subsplease sugoimusic superbits t66y thedarkcommunity torrentbytes torrentday torrentleech torrentnetwork
++torrentsyndikat trancetraffic uploadcx xspeeds xwt`
++    .split(/\s+/)
++    .filter(Boolean);
++
++/** Search pages we know (the definitions only describe announces, not search). */
++const SEARCH = {
++  superbits: [
++    '/search?search={query}',
++    '/api/v1/torrents?extendedSearch=false&freeleech=false&index=0&limit=50&order=asc&page=search&searchText={query}&section=all&sort=n',
++  ],
++  nyaa: ['/?page=rss&c=1_0&f=0&q={query}'],
++  subsplease: [],
++};
++
++/** `{{ .torrentId }}` → `{id}`, `{{ .passkey }}` → `{passkey}`; other variables keep their names. */
++export function convertTemplate(t) {
++  return String(t ?? '')
++    .replace(/\{\{\s*\.torrentId\s*\}\}/g, '{id}')
++    .replace(/\{\{\s*\.([A-Za-z0-9_.]+)\s*(\|[^}]*)?\}\}/g, (_, v) => `{${v}}`);
++}
++
++/** The first `match` block with link templates (usually irc.channels[].parse.match). */
++function findMatch(node) {
++  if (!node || typeof node !== 'object') return null;
++  if (node.match && (node.match.downloadurl || node.match.torrenturl || node.match.infourl))
++    return node.match;
++  for (const v of Array.isArray(node) ? node : Object.values(node)) {
++    const m = findMatch(v);
++    if (m) return m;
++  }
++  return null;
++}
++
++async function load(name) {
++  const res = await fetch(`${BASE}/${name}.yaml`);
++  if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
++  return yaml.load(await res.text());
++}
++
++const presets = [];
++for (const name of NAMES) {
++  let d;
++  try {
++    d = await load(name);
++  } catch (err) {
++    console.warn(`skip ${name}: ${err.message}`);
++    continue;
++  }
++  const match = findMatch(d) ?? {};
++  const urls = (d.urls ?? []).filter((u) => /^https?:\/\//.test(u));
++  if (!urls.length) continue;
++  const fields = (d.settings ?? [])
++    .filter((s) => s?.name && !String(s.name).includes('.'))
++    .map((s) => ({
++      name: String(s.name),
++      label: String(s.label ?? s.name),
++      ...(s.help ? { help: String(s.help).trim().slice(0, 300) } : {}),
++      secret: s.type === 'secret',
++    }));
++  presets.push({
++    id: String(d.identifier ?? name),
++    name: String(d.name ?? name),
++    privacy: String(d.privacy ?? 'private'),
++    urls,
++    fields,
++    infoUrl: convertTemplate(match.infourl),
++    downloadUrl: convertTemplate(match.downloadurl ?? match.torrenturl),
++    searchUrls: SEARCH[name] ?? [],
++  });
++}
++presets.sort((a, b) => a.name.localeCompare(b.name));
++writeFileSync(
++  OUT,
++  JSON.stringify(
++    {
++      source: `autobrr/autobrr@${COMMIT} internal/indexer/definitions (site facts only)`,
++      presets,
++    },
++    null,
++    1,
++  ) + '\n',
++);
++console.log(`wrote ${presets.length} presets`);
+-- 
+2.43.0
+

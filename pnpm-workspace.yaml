@@ -1,0 +1,15 @@
+packages:
+  - packages/*
+  - apps/*
+
+onlyBuiltDependencies:
+  - electron
+  - esbuild
+  - utp-native
+  - bufferutil
+  - utf-8-validate
+  - node-datachannel
+
+patchedDependencies:
+  bittorrent-protocol@5.0.9: patches/bittorrent-protocol@5.0.9.patch
+  webtorrent@3.0.21: patches/webtorrent@3.0.21.patch

@@ -1,0 +1,2844 @@
+From 849146314f56ff21abdf65cc77d63197574b142d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 17:08:31 +0000
+Subject: [PATCH 1/3] Download missing TV/anime episodes automatically
+
+RSS feeds only carry the latest items, so episodes released while DraxMax
+was down or before a rule existed never arrive. A new MissingService checks
+every enabled rule with a save folder: it infers the show/season and owned
+episodes from the folder, client torrents and rule history, searches Nyaa,
+AnimeTosho and configured Torznab indexers (Prowlarr/Jackett) with the
+rule's own text and filters, and adds released episodes after the first one
+owned. Batches are only taken when every episode in them is missing.
+
+- Active shows are checked every 6 h (configurable), idle ones weekly
+- RSS -> Missing tab with per-show status and "Check all now"
+- Settings and env vars: MISSING_*, TORZNAB_URLS (encrypted at rest)
+- Parser: "Show S2 - 05", "Season 2 - 05" and batch ranges like (01-12)
+- Feed parser reads seeders (nyaa:seeders, torznab attr) and magneturl
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013nmSf2zmYoNEfzcNutPGUX
+---
+ .env.example                                 |   4 +
+ README.md                                    |  10 +
+ apps/server/src/app.ts                       |   1 +
+ apps/server/src/routes/rss.ts                |  10 +
+ apps/web/src/components/MissingEpisodes.tsx  | 147 +++++++
+ apps/web/src/lib/api.ts                      |   4 +
+ apps/web/src/pages/Rss.tsx                   |  10 +-
+ apps/web/src/pages/Settings.tsx              |  37 ++
+ apps/web/src/stores/torrents.ts              |   3 +
+ packages/core/src/core.ts                    |  29 +-
+ packages/core/src/events.ts                  |   2 +
+ packages/core/src/index.ts                   |   1 +
+ packages/core/src/media/parse-title.test.ts  |  14 +-
+ packages/core/src/media/parse-title.ts       |  25 +-
+ packages/core/src/missing/missing-service.ts | 385 +++++++++++++++++++
+ packages/core/src/missing/missing.test.ts    | 184 +++++++++
+ packages/core/src/missing/plan.ts            | 134 +++++++
+ packages/core/src/missing/sources.ts         | 155 ++++++++
+ packages/core/src/rss/feed-parser.ts         |  20 +-
+ packages/core/src/settings/settings.ts       |  23 +-
+ packages/shared/src/api.ts                   |   3 +-
+ packages/shared/src/media.ts                 |  36 ++
+ 22 files changed, 1223 insertions(+), 14 deletions(-)
+ create mode 100644 apps/web/src/components/MissingEpisodes.tsx
+ create mode 100644 packages/core/src/missing/missing-service.ts
+ create mode 100644 packages/core/src/missing/missing.test.ts
+ create mode 100644 packages/core/src/missing/plan.ts
+ create mode 100644 packages/core/src/missing/sources.ts
+
+diff --git a/.env.example b/.env.example
+index 4cccd36..6550541 100644
+--- a/.env.example
++++ b/.env.example
+@@ -26,6 +26,10 @@ TORRENT_PORT=6881
+ # DEFAULT_TRACKERS=udp://tracker.opentrackr.org:1337/announce,udp://open.stealth.si:80/announce
+ # ADD_DEFAULT_TRACKERS=false
+ # RSS_REFRESH_MINUTES=30
++# Missing episodes: search for released episodes your RSS rule folders lack
++# MISSING_ENABLED=true
++# MISSING_INTERVAL_HOURS=6
++# TORZNAB_URLS=http://prowlarr:9696/1/api?apikey=xxxx http://prowlarr:9696/2/api?apikey=xxxx
+ # LIBRARY_FOLDERS=/data/library/tv,/data/library/movies
+ # SEARCH_URL_TEMPLATE=https://example.org/search?q={query}
+ # LOG_LEVEL=info
+diff --git a/README.md b/README.md
+index 6f59622..e0aa905 100644
+--- a/README.md
++++ b/README.md
+@@ -88,6 +88,10 @@ Everything is configurable in **Settings**. Every value can also be set by an en
+ | `DEFAULT_TRACKERS` | a few public trackers | Comma- or newline-separated |
+ | `ADD_DEFAULT_TRACKERS` | `false` | Append them to every new torrent |
+ | `RSS_ENABLED` / `RSS_REFRESH_MINUTES` | `true` / `30` | |
++| `MISSING_ENABLED` / `MISSING_INTERVAL_HOURS` | `true` / `6` | Search for episodes your rule folders lack (see *Missing episodes*) |
++| `MISSING_USE_NYAA` / `MISSING_USE_ANIMETOSHO` | `true` / `true` | Built-in anime search sources |
++| `TORZNAB_URLS` | | Prowlarr/Jackett Torznab URLs with `apikey=`, space-separated; needed for live-action TV |
++| `MISSING_MIN_SEEDERS` / `MISSING_MAX_PER_RUN` | `1` / `25` | Skip dead releases; cap torrents added per run |
+ | `TMDB_API_KEY` | | Free at [themoviedb.org](https://www.themoviedb.org/settings/api); v3 key or v4 token |
+ | `ANILIST_ENABLED` / `ANILIST_TOKEN` | `true` / | AniList works without a token |
+ | `LIBRARY_FOLDERS` | | Media folders scanned for *For You* |
+@@ -113,6 +117,12 @@ Everything is configurable in **Settings**. Every value can also be set by an en
+   - Saving a rule also applies it to articles already in your feeds.
+   - Each rule can save to its own folder (*Save to*), e.g. `/downloads/Anime/<Show>/S01`. The checkbox in the rule list turns a rule on or off.
+   - **Coming from qBittorrent?** Export your rules there (RSS → Download Rules… → right-click the list → *Export rules…*). Then use the import button above the rule list. Feeds are matched by URL, and missing ones can be added for you. Rules that end up without a subscribed feed are imported disabled. By default only future articles are downloaded. qBittorrent's per-rule list of already-matched episodes isn't imported.
++- **Missing episodes:** RSS only sees the latest items in a feed, so episodes released while DraxMax was off, or before you added a rule, never arrive that way. Every enabled rule with a *Save to* folder is checked regularly, every 6 h for shows active in the last 30 days and weekly for the rest:
++  - DraxMax reads the folder to learn the show, the season and the episodes you have. Torrents in the client and the rule's download history count too.
++  - It searches Nyaa, AnimeTosho and your Torznab indexers with the rule's own text, and accepts only results that pass the rule's filters, so the group and quality stay the same.
++  - It adds every released episode after the first one you have, so episodes you watched and deleted before that aren't fetched again.
++  - A batch is used only when every episode in it is missing. Releases with no seeders wait for the next check.
++  - **RSS → Missing episodes** shows the status for each show and has *Check all now*.
+ - **Upcoming:** "Already have" teaches the library, and "Ignore" hides an item; both can be undone. "Search & Add" opens your search site, or copies a ready-made query such as `The Expanse S05`.
+ - **Keyboard:** `?` lists every shortcut. `g` then `d`/`u`/`r`/`s`/`,` jumps between pages.
+ 
+diff --git a/apps/server/src/app.ts b/apps/server/src/app.ts
+index 842d866..69d84a3 100644
+--- a/apps/server/src/app.ts
++++ b/apps/server/src/app.ts
+@@ -172,6 +172,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
+     core.events.on('rss:match', (m) => hub.broadcast({ type: 'rss:match', ...m })),
+     core.events.on('stats:tick', (stats) => hub.broadcast({ type: 'stats:tick', stats })),
+     core.events.on('upcoming:updated', () => hub.broadcast({ type: 'upcoming:updated' })),
++    core.events.on('missing:updated', () => hub.broadcast({ type: 'missing:updated' })),
+   ];
+   const timer = setInterval(() => {
+     if (clients.size > 0) hub.broadcast(snapshot());
+diff --git a/apps/server/src/routes/rss.ts b/apps/server/src/routes/rss.ts
+index 38dd586..68f9431 100644
+--- a/apps/server/src/routes/rss.ts
++++ b/apps/server/src/routes/rss.ts
+@@ -25,6 +25,16 @@ export async function rssRoutes(app: FastifyInstance, { core }: { core: Core }):
+   const id = (req: { params: unknown }) => idParams.parse(req.params).id;
+ 
+   app.get('/api/rss/feeds', async () => rss.feeds());
++
++  // Missing episodes: GET the status; POST checks everything now (or `ruleIds` only).
++  app.get('/api/missing', async () => core.missing.get());
++  app.post('/api/missing/check', async (req) => {
++    const body = z
++      .object({ ruleIds: z.array(z.string().min(1)).max(1000).optional() })
++      .parse(req.body ?? {});
++    void core.missing.run(body.ruleIds ? { ruleIds: body.ruleIds } : { force: true });
++    return core.missing.get();
++  });
+   app.post('/api/rss/feeds', async (req, reply) => {
+     const body = feedCreateSchema.parse(req.body);
+     return reply.status(201).send(await rss.addFeed(body.url, body.refreshMinutes ?? null));
+diff --git a/apps/web/src/components/MissingEpisodes.tsx b/apps/web/src/components/MissingEpisodes.tsx
+new file mode 100644
+index 0000000..9b7b06a
+--- /dev/null
++++ b/apps/web/src/components/MissingEpisodes.tsx
+@@ -0,0 +1,147 @@
++import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
++import { Loader2, RefreshCw, SearchCheck } from 'lucide-react';
++import { useState } from 'react';
++import type { MissingShowDTO } from '@draxmax/shared';
++import { Badge, type BadgeTone } from '@/components/ui/badge';
++import { Button } from '@/components/ui/button';
++import { Input } from '@/components/ui/input';
++import { api } from '@/lib/api';
++
++/** [1,2,3,5] → "1–3, 5". */
++export function episodeRanges(eps: number[]): string {
++  const out: string[] = [];
++  for (let i = 0; i < eps.length; i++) {
++    let j = i;
++    while (j + 1 < eps.length && eps[j + 1] === eps[j]! + 1) j++;
++    out.push(j > i ? `${eps[i]}–${eps[j]}` : String(eps[i]));
++    i = j;
++  }
++  return out.join(', ');
++}
++
++const STATE: Record<MissingShowDTO['state'], [string, BadgeTone]> = {
++  ok: ['Complete', 'success'],
++  missing: ['Missing', 'warning'],
++  empty: ['No episodes yet', 'muted'],
++  'no-results': ['Not found', 'muted'],
++  error: ['Error', 'danger'],
++  pending: ['Not checked', 'muted'],
++};
++
++function when(iso: string | null): string {
++  return iso ? new Date(iso).toLocaleString() : '—';
++}
++
++/** RSS → Missing episodes: what each rule's folder lacks, and what was fetched for it. */
++export function MissingTab() {
++  const qc = useQueryClient();
++  const [filter, setFilter] = useState('');
++  const { data } = useQuery({ queryKey: ['missing'], queryFn: api.missing });
++  const check = useMutation({
++    mutationFn: (ruleIds?: string[]) => api.checkMissing(ruleIds),
++    onSuccess: (res) => qc.setQueryData(['missing'], res),
++  });
++  const shows = (data?.shows ?? []).filter(
++    (s) => !filter || `${s.ruleName} ${s.title ?? ''}`.toLowerCase().includes(filter.toLowerCase()),
++  );
++  const count = (st: MissingShowDTO['state']) => data?.shows.filter((s) => s.state === st).length;
++
++  return (
++    <section className="glass flex h-full min-h-0 flex-col rounded-2xl">
++      <div className="flex flex-wrap items-center gap-3 border-b p-3">
++        <span className="flex items-center gap-2 px-1 text-sm font-medium">
++          <SearchCheck className="size-4 text-muted" /> Missing episodes
++        </span>
++        <span className="text-xs text-muted">
++          {data?.running
++            ? `Checking ${data.current ?? '…'}`
++            : data?.lastRunAt
++              ? `Last run ${when(data.lastRunAt)} · ${data.lastRunAdded} added`
++              : 'Not run yet'}
++          {data && !data.enabled && ' · automatic checks are off (Settings → RSS)'}
++        </span>
++        <div className="ml-auto flex items-center gap-2">
++          <Input
++            aria-label="Filter shows"
++            placeholder="Filter…"
++            value={filter}
++            onChange={(e) => setFilter(e.target.value)}
++            className="h-8 w-40"
++          />
++          <Button
++            size="sm"
++            variant="primary"
++            disabled={data?.running || check.isPending || data?.sources.length === 0}
++            onClick={() => check.mutate(undefined)}
++          >
++            {data?.running ? <Loader2 className="animate-spin" /> : <RefreshCw />} Check all now
++          </Button>
++        </div>
++      </div>
++      <p className="border-b px-4 py-2 text-xs text-muted">
++        Each enabled rule with a save folder is compared with what its search finds on{' '}
++        {data?.sources.length ? data.sources.join(', ') : 'no sources (enable one in Settings)'}.
++        Released episodes after the first one you have are added automatically.{' '}
++        {data && (
++          <>
++            {count('missing') ?? 0} with missing episodes · {count('ok') ?? 0} complete ·{' '}
++            {count('empty') ?? 0} without episodes yet.
++          </>
++        )}
++      </p>
++      <ul className="min-h-0 flex-1 divide-y divide-border/60 overflow-y-auto">
++        {shows.map((s) => {
++          const [label, tone] = STATE[s.state];
++          return (
++            <li key={s.ruleId} className="flex items-start gap-3 px-4 py-3">
++              <Badge tone={tone} className="mt-0.5 shrink-0">
++                {label}
++              </Badge>
++              <div className="min-w-0 flex-1 space-y-0.5">
++                <div className="truncate text-sm font-medium">
++                  {s.title ?? s.ruleName}
++                  {s.season !== null && s.season > 1 && (
++                    <span className="text-muted"> · Season {s.season}</span>
++                  )}
++                </div>
++                <div className="text-xs text-muted">
++                  {s.have.length > 0 && <>Have {episodeRanges(s.have)}</>}
++                  {s.added.length > 0 && (
++                    <span className="text-success"> · Added {episodeRanges(s.added)}</span>
++                  )}
++                  {s.unavailable.length > 0 && (
++                    <span className="text-warning">
++                      {' '}
++                      · Waiting for {episodeRanges(s.unavailable)}
++                    </span>
++                  )}
++                  {s.message && (
++                    <span className={s.state === 'error' ? 'text-danger' : ''}> · {s.message}</span>
++                  )}
++                </div>
++                <div className="truncate font-mono text-[11px] text-muted/80" title={s.savePath}>
++                  {s.savePath} · checked {when(s.checkedAt)}
++                </div>
++              </div>
++              <Button
++                size="sm"
++                variant="ghost"
++                disabled={data?.running || check.isPending}
++                onClick={() => check.mutate([s.ruleId])}
++              >
++                Check
++              </Button>
++            </li>
++          );
++        })}
++        {shows.length === 0 && (
++          <li className="p-10 text-center text-sm text-muted">
++            {data?.shows.length
++              ? 'No show matches the filter.'
++              : 'No enabled download rules with a save folder.'}
++          </li>
++        )}
++      </ul>
++    </section>
++  );
++}
+diff --git a/apps/web/src/lib/api.ts b/apps/web/src/lib/api.ts
+index 2f702e5..f425079 100644
+--- a/apps/web/src/lib/api.ts
++++ b/apps/web/src/lib/api.ts
+@@ -10,6 +10,7 @@ import type {
+   StatsHistory,
+   StatsSnapshot,
+   UpcomingResponse,
++  MissingResponse,
+   LibraryEntryDTO,
+   AddMagnetRequest,
+   AddTorrentFileRequest,
+@@ -182,6 +183,9 @@ export const api = {
+   importQbRules: (body: QbRuleImportRequest) =>
+     request<RuleImportResult>('POST', '/api/rss/rules/import', body),
+   previewRule: (r: RuleInput) => request<ArticleDTO[]>('POST', '/api/rss/rules/preview', r),
++  missing: () => request<MissingResponse>('GET', '/api/missing'),
++  checkMissing: (ruleIds?: string[]) =>
++    request<MissingResponse>('POST', '/api/missing/check', ruleIds ? { ruleIds } : {}),
+   rssHistory: () => request<RssHistoryDTO[]>('GET', '/api/rss/history'),
+   clearRssHistory: () => request<undefined>('DELETE', '/api/rss/history'),
+ 
+diff --git a/apps/web/src/pages/Rss.tsx b/apps/web/src/pages/Rss.tsx
+index e37d896..816a9a3 100644
+--- a/apps/web/src/pages/Rss.tsx
++++ b/apps/web/src/pages/Rss.tsx
+@@ -19,6 +19,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+ import { toast } from 'sonner';
+ import type { ArticleDTO, FeedDTO, RuleDTO, RuleImportResult, RuleInput } from '@draxmax/shared';
+ import { PathInput } from '@/components/FolderPicker';
++import { MissingTab } from '@/components/MissingEpisodes';
+ import { Badge } from '@/components/ui/badge';
+ import { Button } from '@/components/ui/button';
+ import { Dialog, DialogContent } from '@/components/ui/dialog';
+@@ -55,10 +56,11 @@ export function RssPage() {
+       </header>
+       <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
+         <TabsList
+-          className="mb-4 max-w-md"
++          className="mb-4 max-w-xl"
+           items={[
+             { value: 'feeds', label: 'Feeds' },
+             { value: 'rules', label: 'Download rules' },
++            { value: 'missing', label: 'Missing' },
+             { value: 'history', label: 'History' },
+           ]}
+         />
+@@ -68,6 +70,9 @@ export function RssPage() {
+         <TabsContent value="rules" className="min-h-0 flex-1">
+           <RulesTab />
+         </TabsContent>
++        <TabsContent value="missing" className="min-h-0 flex-1">
++          <MissingTab />
++        </TabsContent>
+         <TabsContent value="history" className="min-h-0 flex-1">
+           <HistoryTab />
+         </TabsContent>
+@@ -1348,7 +1353,8 @@ function HistoryTab() {
+             <div className="min-w-0 flex-1">
+               <div className="truncate text-sm">{h.articleTitle}</div>
+               <div className="text-xs text-muted">
+-                {h.ruleName ? `Rule: ${h.ruleName}` : 'Manual download'} ·{' '}
++                {h.ruleName ? `Rule: ${h.ruleName}` : 'Manual download'}
++                {h.feedId === 'missing' && ' (missing episode search)'} ·{' '}
+                 {new Date(h.createdAt).toLocaleString()}
+                 {h.error && <span className="text-danger"> · {h.error}</span>}
+               </div>
+diff --git a/apps/web/src/pages/Settings.tsx b/apps/web/src/pages/Settings.tsx
+index 29b7ba9..9f6fb2f 100644
+--- a/apps/web/src/pages/Settings.tsx
++++ b/apps/web/src/pages/Settings.tsx
+@@ -214,6 +214,43 @@ export function SettingsPage() {
+               min={10}
+               max={5000}
+             />
++            <SwitchField
++              ctx={ctx}
++              k="missingEnabled"
++              label="Download missing episodes automatically"
++              hint="Feeds only show the latest releases. This searches for released episodes your rule folders lack (gaps and newer ones) and adds them. See RSS → Missing episodes."
++            />
++            <NumberField
++              ctx={ctx}
++              k="missingIntervalHours"
++              label="Check followed shows every"
++              unit="hours"
++              min={1}
++              max={168}
++            />
++            <SwitchField ctx={ctx} k="missingUseNyaa" label="Search Nyaa (anime)" />
++            <SwitchField ctx={ctx} k="missingUseAnimeTosho" label="Search AnimeTosho (anime)" />
++            <SecretField
++              ctx={ctx}
++              isSet={data.secretsSet.torznabUrls ?? false}
++              k="torznabUrls"
++              label="Torznab indexers"
++              hint="Prowlarr or Jackett feed URLs including apikey=, separated by spaces. Needed for live-action TV and private trackers."
++            />
++            <NumberField
++              ctx={ctx}
++              k="missingMinSeeders"
++              label="Minimum seeders"
++              min={0}
++              max={1000}
++            />
++            <NumberField
++              ctx={ctx}
++              k="missingMaxPerRun"
++              label="Most torrents added per run"
++              min={1}
++              max={500}
++            />
+           </Section>
+           <Section id="media" title="Upcoming & media" icon={<Sparkles />}>
+             <SecretField
+diff --git a/apps/web/src/stores/torrents.ts b/apps/web/src/stores/torrents.ts
+index 2cb3888..d36219a 100644
+--- a/apps/web/src/stores/torrents.ts
++++ b/apps/web/src/stores/torrents.ts
+@@ -70,6 +70,9 @@ function handle(event: ServerEvent): void {
+     case 'upcoming:updated':
+       void queryClient.invalidateQueries({ queryKey: ['upcoming'] });
+       break;
++    case 'missing:updated':
++      void queryClient.invalidateQueries({ queryKey: ['missing'] });
++      break;
+   }
+ }
+ 
+diff --git a/packages/core/src/core.ts b/packages/core/src/core.ts
+index 64ecc1c..82f4be0 100644
+--- a/packages/core/src/core.ts
++++ b/packages/core/src/core.ts
+@@ -10,6 +10,7 @@ import { UpcomingService } from './media/upcoming.ts';
+ import { StatsService } from './stats/stats-service.ts';
+ import { WatchFolder } from './watch/watch-folder.ts';
+ import { RssService, type RssServiceDeps } from './rss/rss-service.ts';
++import { MissingService, type MissingDeps } from './missing/missing-service.ts';
+ import { fileKeyCipher } from './settings/secret-cipher.ts';
+ import { SettingsStore, type SecretCipher } from './settings/settings.ts';
+ import type { TorrentEngine } from './torrent/engine.ts';
+@@ -28,6 +29,8 @@ export interface CoreOptions {
+   cipher?: SecretCipher;
+   /** Network overrides for tests. */
+   rssFetch?: Pick<RssServiceDeps, 'fetchFeed' | 'fetchTorrent'>;
++  /** Network overrides for the missing-episode search (tests). */
++  missingFetch?: Pick<MissingDeps, 'fetchText' | 'fetchTorrent'>;
+   /** Don't start background schedulers and don't pace metadata APIs (tests). */
+   noSchedulers?: boolean;
+ }
+@@ -42,6 +45,7 @@ export interface CategoryService {
+ export interface Core {
+   torrents: TorrentManager;
+   rss: RssService;
++  missing: MissingService;
+   upcoming: UpcomingService;
+   stats: StatsService;
+   watch: WatchFolder;
+@@ -91,8 +95,9 @@ export function createCore(opts: CoreOptions): Core {
+   });
+   torrents.init();
+ 
++  const rssRepo = new RssRepository(db);
+   const rss = new RssService({
+-    repo: new RssRepository(db),
++    repo: rssRepo,
+     torrents,
+     events,
+     settings: () => settings.get(),
+@@ -100,6 +105,17 @@ export function createCore(opts: CoreOptions): Core {
+   });
+   if (!opts.noSchedulers) rss.start();
+ 
++  const missing = new MissingService({
++    db,
++    repo: rssRepo,
++    torrents,
++    events,
++    settings: () => settings.get(),
++    ...opts.missingFetch,
++    ...(opts.noSchedulers ? { sourceIntervalMs: 0 } : {}),
++  });
++  if (!opts.noSchedulers) missing.start();
++
+   const upcoming = new UpcomingService({
+     db,
+     torrents,
+@@ -145,12 +161,22 @@ export function createCore(opts: CoreOptions): Core {
+     ) {
+       void upcoming.refresh();
+     }
++    // Newly enabled or new sources: check everything due now.
++    if (
++      ['missingEnabled', 'missingUseNyaa', 'missingUseAnimeTosho', 'torznabUrls'].some((k) =>
++        changed.includes(k as never),
++      )
++    ) {
++      events.emit('missing:updated', null);
++      if (s.missingEnabled && !opts.noSchedulers) void missing.run();
++    }
+   });
+ 
+   let closed = false;
+   return {
+     torrents,
+     rss,
++    missing,
+     upcoming,
+     stats,
+     watch,
+@@ -164,6 +190,7 @@ export function createCore(opts: CoreOptions): Core {
+       if (closed) return;
+       closed = true;
+       rss.stop();
++      missing.stop();
+       upcoming.stop();
+       stats.stop();
+       watch.stop();
+diff --git a/packages/core/src/events.ts b/packages/core/src/events.ts
+index a7fbb94..36c7b2f 100644
+--- a/packages/core/src/events.ts
++++ b/packages/core/src/events.ts
+@@ -18,6 +18,8 @@ export interface CoreEventMap {
+   'stats:tick': [StatsSnapshot];
+   /** Upcoming lists changed or a refresh started/finished. */
+   'upcoming:updated': [null];
++  /** Missing-episode check state changed (run started, show checked, finished). */
++  'missing:updated': [null];
+   /** Recoverable engine problem (e.g. uTP port unavailable, continuing TCP-only). */
+   'engine:warning': [Error];
+ }
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index 0e07bcf..213ef9e 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -13,6 +13,7 @@ export {
+   type SecretCipher,
+ } from './settings/settings.ts';
+ export { RssService } from './rss/rss-service.ts';
++export { MissingService } from './missing/missing-service.ts';
+ export { parseRelease, episodeKeys, titleKey, type ParsedRelease } from './media/parse-title.ts';
+ export { UpcomingService } from './media/upcoming.ts';
+ export { StatsService } from './stats/stats-service.ts';
+diff --git a/packages/core/src/media/parse-title.test.ts b/packages/core/src/media/parse-title.test.ts
+index 01563ce..4a7a303 100644
+--- a/packages/core/src/media/parse-title.test.ts
++++ b/packages/core/src/media/parse-title.test.ts
+@@ -19,7 +19,19 @@ describe('parseRelease', () => {
+       '[SubsPlease] Frieren - 12 (1080p) [ABCD1234].mkv',
+       { title: 'Frieren', season: 1, episodes: [12], anime: true },
+     ],
+-    ['[Erai-raws] Spy x Family Season 2 - 05 [1080p]', { title: 'Spy x Family', season: 2 }],
++    [
++      '[Erai-raws] Spy x Family Season 2 - 05 [1080p]',
++      { title: 'Spy x Family', season: 2, episodes: [5] },
++    ],
++    [
++      '[SubsPlease] Sousou no Frieren S2 - 05 (720p) [0A1B2C3D].mkv',
++      { title: 'Sousou no Frieren', season: 2, episodes: [5], seasonPack: false },
++    ],
++    [
++      '[SubsPlease] Gachiakuta (01-12) (1080p) [Batch]',
++      { title: 'Gachiakuta', season: 1, episodes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
++    ],
++    ['[Group] Show S2 - 01-03 [720p]', { title: 'Show', season: 2, episodes: [1, 2, 3] }],
+     [
+       'Dune.Part.Two.2024.2160p.UHD.BluRay.x265',
+       { title: 'Dune Part Two', year: 2024, episodes: [] },
+diff --git a/packages/core/src/media/parse-title.ts b/packages/core/src/media/parse-title.ts
+index 70b774c..f020a43 100644
+--- a/packages/core/src/media/parse-title.ts
++++ b/packages/core/src/media/parse-title.ts
+@@ -96,12 +96,16 @@ export function parseRelease(name: string): ParsedRelease {
+   // "Season 2 Episode 5" / "Season 2" / "S02" pack
+   if (out.season === undefined) {
+     const long = take(/\bSeason[ ._]?(\d{1,3})(?:[ ._]*(?:Episode|Ep)[ ._]?(\d{1,4}))?/i.exec(s));
+-    if (long) {
+-      out.season = Number(long[1]);
+-      if (long[2]) out.episodes = [Number(long[2])];
+-    } else {
+-      const pack = take(/\bS(\d{1,2})(?![\dE])(?:[-–]S?(\d{1,2}))?\b/i.exec(s));
+-      if (pack) out.season = Number(pack[1]);
++    const season = long ?? take(/\bS(\d{1,2})(?![\dE])(?:[-–]S?(\d{1,2}))?\b/i.exec(s));
++    if (season) {
++      out.season = Number(season[1]);
++      if (long?.[2]) out.episodes = [Number(long[2])];
++      // Anime per-season numbering: "Show S2 - 05", "Show Season 2 - 05", "Show S2 - 01-12".
++      const ep = /^\s[-–]\s(\d{1,4})(?:v\d)?(?:\s?[-~–]\s?(\d{1,4})(?:v\d)?)?(?=\s|$|\[|\()/.exec(
++        s.slice(season.index + season[0].length),
++      );
++      if (ep && !long?.[2] && Number(ep[1]) < 1900)
++        out.episodes = ep[2] ? range(Number(ep[1]), Number(ep[2])) : [Number(ep[1])];
+     }
+   }
+ 
+@@ -114,10 +118,17 @@ export function parseRelease(name: string): ParsedRelease {
+ 
+   // Anime absolute numbering: "Title - 05", "Title - 05v2", "Title 05 [1080p]"
+   if (out.season === undefined && !out.date) {
++    // Batches: "Title - 01-12", "Title (01-12)", "Title - 01 ~ 12".
++    const batch = /\s(?:[-–]\s|\()(\d{1,4})\s?[-~–]\s?(\d{1,4})(?:\)|\s|$|\[)/.exec(s);
+     const abs =
+       /\s[-–]\s(\d{1,4})(?:v\d)?(?:\s|$|\[|\()/.exec(s) ??
+       (anime ? /\s(\d{1,4})(?:v\d)?\s*[[(]/.exec(s) : null);
+-    if (abs && Number(abs[1]) < 1900) {
++    if (batch && Number(batch[2]) < 1900 && Number(batch[1]) < Number(batch[2])) {
++      take(batch);
++      out.anime = true;
++      out.season = 1;
++      out.episodes = range(Number(batch[1]), Number(batch[2]));
++    } else if (abs && Number(abs[1]) < 1900) {
+       take(abs);
+       out.anime = true;
+       out.season = 1;
+diff --git a/packages/core/src/missing/missing-service.ts b/packages/core/src/missing/missing-service.ts
+new file mode 100644
+index 0000000..8120967
+--- /dev/null
++++ b/packages/core/src/missing/missing-service.ts
+@@ -0,0 +1,385 @@
++import { readdir } from 'node:fs/promises';
++import { basename, join } from 'node:path';
++import type { MissingResponse, MissingShowDTO, TorrentItem } from '@draxmax/shared';
++import { MAGNET_RE } from '@draxmax/shared';
++import type { Database } from '../db/database.ts';
++import { CoreError } from '../errors.ts';
++import type { CoreEvents } from '../events.ts';
++import { fetchBytes } from '../net/http.ts';
++import type { RssRepository, RuleRow } from '../rss/rss-repo.ts';
++import type { Settings } from '../settings/settings.ts';
++import type { TorrentManager } from '../torrent/manager.ts';
++import {
++  episodesFromKeys,
++  episodesOf,
++  inferIdentity,
++  planDownloads,
++  searchQuery,
++  type Identity,
++} from './plan.ts';
++import {
++  animeToshoSource,
++  defaultFetchText,
++  nyaaSource,
++  parseTorznabUrls,
++  torznabSource,
++  type FetchText,
++  type SearchResult,
++  type SearchSource,
++} from './sources.ts';
++
++const HOUR = 3600_000;
++const TICK_MS = 15 * 60_000;
++const FIRST_RUN_DELAY_MS = 2 * 60_000;
++/** Shows without a match for this long are checked weekly instead. */
++const ACTIVE_WINDOW_MS = 30 * 24 * HOUR;
++const IDLE_INTERVAL_MS = 7 * 24 * HOUR;
++const VIDEO_EXT = /\.(mkv|mp4|avi|m4v|mov|wmv|ts|webm)$/i;
++const SCAN_DEPTH = 2;
++/** History feed id for torrents added by this service. */
++export const MISSING_FEED_ID = 'missing';
++
++export interface MissingDeps {
++  db: Database;
++  repo: RssRepository;
++  torrents: TorrentManager;
++  events: CoreEvents;
++  settings: () => Settings;
++  /** Injected for tests. */
++  fetchText?: FetchText;
++  fetchTorrent?: (url: string) => Promise<Uint8Array>;
++  /** Spacing between requests to one source (tests use 0). */
++  sourceIntervalMs?: number;
++}
++
++interface Stored {
++  shows: Record<string, MissingShowDTO>;
++  lastRunAt: string | null;
++  lastRunAdded: number;
++}
++
++/** Video file names under a folder (a few levels deep); missing folders count as empty. */
++async function listVideos(root: string, depth = 0, out: string[] = []): Promise<string[]> {
++  if (depth > SCAN_DEPTH) return out;
++  let entries;
++  try {
++    entries = await readdir(root, { withFileTypes: true });
++  } catch {
++    return out;
++  }
++  for (const e of entries) {
++    if (e.name.startsWith('.')) continue;
++    if (e.isDirectory()) await listVideos(join(root, e.name), depth + 1, out);
++    else if (VIDEO_EXT.test(e.name) && !/sample/i.test(e.name)) out.push(e.name);
++  }
++  return out;
++}
++
++const samePath = (a: string, b: string) => a.replace(/[\\/]+$/, '') === b.replace(/[\\/]+$/, '');
++
++/**
++ * Fills gaps that RSS can't: feeds only carry the latest items, so episodes released while
++ * DraxMax was down (or before a rule existed) never show up. For every enabled rule with a
++ * save folder, this works out which show/season the folder holds and which episodes it has,
++ * searches indexers with the rule's own query and filters, and adds the released episodes
++ * that are missing — newer ones and gaps after the first episode owned.
++ */
++export class MissingService {
++  private running: Promise<void> | null = null;
++  private current: string | null = null;
++  private timers: NodeJS.Timeout[] = [];
++  private closed = false;
++
++  constructor(private readonly deps: MissingDeps) {}
++
++  start(): void {
++    this.timers.push(setTimeout(() => void this.run(), FIRST_RUN_DELAY_MS).unref());
++    this.timers.push(setInterval(() => void this.run(), TICK_MS).unref());
++  }
++
++  stop(): void {
++    this.closed = true;
++    for (const t of this.timers) clearTimeout(t);
++  }
++
++  private stored(): Stored {
++    const row = this.deps.db.prepare("SELECT value FROM kv WHERE key = 'missing'").get() as
++      { value: string } | undefined;
++    return row
++      ? (JSON.parse(row.value) as Stored)
++      : { shows: {}, lastRunAt: null, lastRunAdded: 0 };
++  }
++
++  private store(s: Stored): void {
++    this.deps.db
++      .prepare(
++        "INSERT INTO kv (key, value) VALUES ('missing', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
++      )
++      .run(JSON.stringify(s));
++  }
++
++  private sources(): SearchSource[] {
++    const s = this.deps.settings();
++    const fetchText = this.deps.fetchText ?? defaultFetchText;
++    const gap = this.deps.sourceIntervalMs;
++    return [
++      ...(s.missingUseNyaa ? [nyaaSource(fetchText, gap)] : []),
++      ...(s.missingUseAnimeTosho ? [animeToshoSource(fetchText, gap)] : []),
++      ...parseTorznabUrls(s.torznabUrls).map((u) => torznabSource(u, fetchText, gap)),
++    ];
++  }
++
++  /** Rules that can be checked: enabled, with a save folder. */
++  private rules(): RuleRow[] {
++    return this.deps.repo.rules().filter((r) => r.enabled && r.savePath?.trim());
++  }
++
++  get(): MissingResponse {
++    const s = this.stored();
++    const shows = this.rules().map(
++      (r): MissingShowDTO =>
++        s.shows[r.id] ?? {
++          ruleId: r.id,
++          ruleName: r.name,
++          savePath: r.savePath!,
++          title: null,
++          season: null,
++          have: [],
++          missing: [],
++          added: [],
++          unavailable: [],
++          state: 'pending',
++          message: null,
++          checkedAt: null,
++          nextCheckAt: null,
++        },
++    );
++    const order = { missing: 0, error: 1, 'no-results': 2, pending: 3, empty: 4, ok: 5 };
++    shows.sort((a, b) => order[a.state] - order[b.state] || a.ruleName.localeCompare(b.ruleName));
++    return {
++      enabled: this.deps.settings().missingEnabled,
++      shows,
++      sources: this.sources().map((x) => x.name),
++      running: this.running !== null,
++      current: this.current,
++      lastRunAt: s.lastRunAt,
++      lastRunAdded: s.lastRunAdded,
++    };
++  }
++
++  /**
++   * Checks due shows (or the given rules / everything with `force`). Scheduled runs only
++   * happen while the feature is enabled; concurrent calls share one run.
++   */
++  run(opts: { force?: boolean; ruleIds?: string[] } = {}): Promise<void> {
++    if (this.running) return this.running;
++    if (!opts.force && !opts.ruleIds && !this.deps.settings().missingEnabled)
++      return Promise.resolve();
++    this.running = this.doRun(opts)
++      .catch((err: unknown) => {
++        // The database closes under a run still going at shutdown; that's expected.
++        if (!this.closed) throw err;
++      })
++      .finally(() => {
++        this.running = null;
++        this.current = null;
++        if (!this.closed) this.deps.events.emit('missing:updated', null);
++      });
++    this.deps.events.emit('missing:updated', null);
++    return this.running;
++  }
++
++  private async doRun(opts: { force?: boolean; ruleIds?: string[] }): Promise<void> {
++    const sources = this.sources();
++    if (sources.length === 0) return;
++    const settings = this.deps.settings();
++    const now = Date.now();
++    const state = this.stored();
++    const rules = this.rules();
++    const due = rules.filter((r) => {
++      if (opts.ruleIds) return opts.ruleIds.includes(r.id);
++      const next = state.shows[r.id]?.nextCheckAt;
++      return opts.force || !next || Date.parse(next) <= now;
++    });
++    let budget = settings.missingMaxPerRun;
++    let added = 0;
++    const torrents = this.deps.torrents.list();
++    for (const rule of due) {
++      if (this.closed) return;
++      this.current = rule.name;
++      this.deps.events.emit('missing:updated', null);
++      const show = await this.checkRule(rule, sources, torrents, budget, settings);
++      budget -= show.added.length;
++      added += show.added.length;
++      // Re-read: the history and other state may have changed while searching.
++      const latest = this.stored();
++      latest.shows[rule.id] = show;
++      this.store(latest);
++    }
++    const final = this.stored();
++    const known = new Set(rules.map((r) => r.id));
++    final.shows = Object.fromEntries(Object.entries(final.shows).filter(([id]) => known.has(id)));
++    if (due.length) {
++      final.lastRunAt = new Date().toISOString();
++      final.lastRunAdded = added;
++    }
++    this.store(final);
++  }
++
++  private async checkRule(
++    rule: RuleRow,
++    sources: SearchSource[],
++    torrents: TorrentItem[],
++    budget: number,
++    settings: Settings,
++  ): Promise<MissingShowDTO> {
++    const savePath = rule.savePath!;
++    const active = Date.now() - Date.parse(rule.lastMatchAt ?? rule.createdAt) < ACTIVE_WINDOW_MS;
++    const next = (ms: number) => new Date(Date.now() + ms).toISOString();
++    const base: MissingShowDTO = {
++      ruleId: rule.id,
++      ruleName: rule.name,
++      savePath,
++      title: null,
++      season: null,
++      have: [],
++      missing: [],
++      added: [],
++      unavailable: [],
++      state: 'ok',
++      message: null,
++      checkedAt: new Date().toISOString(),
++      nextCheckAt: next(active ? settings.missingIntervalHours * HOUR : IDLE_INTERVAL_MS),
++    };
++
++    const onDisk = await listVideos(savePath);
++    const inClient = torrents
++      .filter((t) => samePath(t.savePath, savePath))
++      .flatMap((t) => [t.name, ...t.files.map((f) => basename(f.path || f.name))]);
++    const names = [...onDisk, ...inClient];
++    const id = inferIdentity(names);
++    if (!id)
++      return {
++        ...base,
++        state: 'empty',
++        message: 'No episodes in this folder yet, so there is nothing to compare against.',
++      };
++
++    const have = episodesOf(names, id);
++    for (const e of episodesFromKeys(this.deps.repo.downloadedEpisodes(rule.id).keys(), id))
++      have.add(e);
++    const query = searchQuery(rule, id);
++    const results: SearchResult[] = [];
++    const errors: string[] = [];
++    const usable = sources.filter((s) => id.anime || !s.animeOnly);
++    for (const source of usable) {
++      try {
++        results.push(...(await source.search(query)));
++      } catch (err) {
++        errors.push(`${source.name}: ${(err as Error).message}`);
++      }
++    }
++    const shown = { ...base, title: id.title, season: id.season, have: sorted(have) };
++    if (usable.length === 0)
++      return {
++        ...shown,
++        state: 'error',
++        message: 'Live-action shows need a Torznab indexer (Prowlarr or Jackett).',
++      };
++    if (errors.length === usable.length)
++      return {
++        ...shown,
++        state: 'error',
++        message: errors.join(' · '),
++        nextCheckAt: next(settings.missingIntervalHours * HOUR),
++      };
++
++    const plan = planDownloads(results, rule, id, have, { minSeeders: settings.missingMinSeeders });
++    const addedEps: number[] = [];
++    const deferred: number[] = [];
++    for (const d of plan.downloads) {
++      if (addedEps.length >= budget || budget <= 0) {
++        deferred.push(...d.episodes);
++        continue;
++      }
++      if (await this.download(rule, id, d.result, d.episodes)) addedEps.push(...d.episodes);
++      else deferred.push(...d.episodes);
++    }
++    const unavailable = sorted(new Set([...plan.unavailable, ...deferred]));
++    return {
++      ...shown,
++      missing: plan.missing,
++      added: sorted(new Set(addedEps)),
++      unavailable,
++      state: unavailable.length ? 'missing' : plan.released.length ? 'ok' : 'no-results',
++      message:
++        (plan.released.length === 0
++          ? `No releases of ${id.title}${id.season > 1 ? ` season ${id.season}` : ''} matching this rule were found for “${query}”.`
++          : null) ?? (errors.length ? errors.join(' · ') : null),
++      // Come back soon when work is left over (budget, unseeded releases).
++      nextCheckAt: unavailable.length
++        ? next(settings.missingIntervalHours * HOUR)
++        : base.nextCheckAt,
++    };
++  }
++
++  /** Adds one release to the client and records it in the RSS history. True if added or already there. */
++  private async download(
++    rule: RuleRow,
++    id: Identity,
++    result: SearchResult,
++    episodes: number[],
++  ): Promise<boolean> {
++    let status: 'added' | 'duplicate' | 'failed' = 'failed';
++    let torrentId: string | null = null;
++    let error: string | null = null;
++    const opts = {
++      category: rule.category,
++      tags: rule.tags,
++      savePath: rule.savePath,
++      paused: rule.addPaused,
++    };
++    try {
++      if (MAGNET_RE.test(result.url)) {
++        torrentId = this.deps.torrents.addMagnet(result.url, opts).id;
++      } else {
++        const data = await (this.deps.fetchTorrent ?? defaultFetchTorrent)(result.url);
++        torrentId = (await this.deps.torrents.addTorrentFile(data, opts)).id;
++      }
++      status = 'added';
++    } catch (err) {
++      if (err instanceof CoreError && err.code === 'conflict') status = 'duplicate';
++      else error = (err as Error).message;
++    }
++    this.deps.repo.recordDownload({
++      ruleId: rule.id,
++      ruleName: rule.name,
++      feedId: MISSING_FEED_ID,
++      articleId: result.url.slice(0, 512),
++      articleTitle: result.title,
++      torrentUrl: result.url,
++      episodeKeys: episodes.map((e) => `${id.key}|s${id.season}e${e}`),
++      repack: false,
++      torrentId,
++      status,
++      error,
++    });
++    if (status !== 'failed')
++      this.deps.events.emit('rss:match', {
++        ruleName: `${rule.name} (missing episode)`,
++        title: result.title,
++        status,
++      });
++    return status !== 'failed';
++  }
++}
++
++const sorted = (s: Iterable<number>) => [...s].sort((a, b) => a - b);
++
++async function defaultFetchTorrent(url: string): Promise<Uint8Array> {
++  const { body } = await fetchBytes(url, {
++    maxBytes: 10 * 1024 * 1024,
++    headers: { accept: 'application/x-bittorrent, */*' },
++  });
++  return body;
++}
+diff --git a/packages/core/src/missing/missing.test.ts b/packages/core/src/missing/missing.test.ts
+new file mode 100644
+index 0000000..16cd852
+--- /dev/null
++++ b/packages/core/src/missing/missing.test.ts
+@@ -0,0 +1,184 @@
++import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
++import type { RuleInput } from '@draxmax/shared';
++import { createCore, type Core } from '../core.ts';
++import { FakeEngine } from '../testing/index.ts';
++import { inferIdentity, planDownloads, searchQuery, type Identity } from './plan.ts';
++import type { SearchResult } from './sources.ts';
++
++const hash = (n: number) => n.toString(16).padStart(40, '0');
++const result = (title: string, seeders: number | null = 10, n = 1): SearchResult => ({
++  title,
++  url: `magnet:?xt=urn:btih:${hash(n)}`,
++  seeders,
++  size: null,
++  source: 'test',
++});
++const rule = {
++  mustContain: ['Sousou no Frieren S2 720'],
++  mustNotContain: [],
++  useRegex: false,
++};
++const frieren2: Identity = {
++  key: 'sousou no frieren',
++  title: 'Sousou no Frieren',
++  season: 2,
++  anime: true,
++};
++
++describe('missing-episode planning', () => {
++  it('infers the show and season a folder holds', () => {
++    expect(
++      inferIdentity([
++        '[SubsPlease] Sousou no Frieren S2 - 01 (720p) [AAAA].mkv',
++        '[SubsPlease] Sousou no Frieren S2 - 02 (720p) [BBBB].mkv',
++        'Some Movie (2020).mkv',
++      ]),
++    ).toEqual(frieren2);
++    expect(inferIdentity(['notes.txt'])).toBeNull();
++  });
++
++  it('builds the search text from the rule, dropping wildcards and bare resolutions', () => {
++    expect(searchQuery(rule, frieren2)).toBe('Sousou no Frieren S2');
++    expect(searchQuery({ mustContain: ['Show* 1080p|Other'], useRegex: false }, frieren2)).toBe(
++      'Show',
++    );
++    expect(
++      searchQuery(
++        { mustContain: ['Monarch.*S02E[0-9]{2}'], useRegex: true },
++        { key: 'monarch', title: 'Monarch', season: 2, anime: false },
++      ),
++    ).toBe('Monarch S02');
++  });
++
++  it('picks gaps and newer episodes that pass the rule, never earlier or other seasons', () => {
++    const results = [
++      result('[SubsPlease] Sousou no Frieren S2 - 01 (720p) [X].mkv', 50, 1), // before first owned
++      result('[SubsPlease] Sousou no Frieren S2 - 03 (720p) [X].mkv', 5, 3), // gap
++      result('[SubsPlease] Sousou no Frieren S2 - 03 (1080p) [X].mkv', 99, 30), // wrong quality
++      result('[SubsPlease] Sousou no Frieren S2 - 05 (720p) [X].mkv', 0, 5), // no seeders
++      result('[Erai-raws] Sousou no Frieren S2 - 06 [720p][Multiple Subtitle]', 4, 6), // newer
++      result('[SubsPlease] Sousou no Frieren S2 - 06 (720p) [X].mkv', 20, 60), // better copy
++      result('[SubsPlease] Sousou no Frieren - 07 (720p) [X].mkv', 20, 7), // season 1 numbering
++    ];
++    const plan = planDownloads(results, rule, frieren2, new Set([2, 4]), { minSeeders: 1 });
++    expect(plan.released).toEqual([3, 5, 6]);
++    expect(plan.missing).toEqual([3, 5, 6]);
++    expect(plan.downloads.map((d) => [d.episodes, d.result.seeders])).toEqual([
++      [[3], 5],
++      [[6], 20],
++    ]);
++    expect(plan.unavailable).toEqual([5]);
++  });
++
++  it('takes a batch only when every episode in it is missing', () => {
++    const results = [
++      result('[SubsPlease] Sousou no Frieren S2 - 01-04 (720p) [Batch]', 30, 1),
++      result('[SubsPlease] Sousou no Frieren S2 - 03 (720p)', 10, 3),
++      result('[SubsPlease] Sousou no Frieren S2 - 04 (720p)', 10, 4),
++    ];
++    const some = planDownloads(results, rule, frieren2, new Set([1, 2]), { minSeeders: 1 });
++    expect(some.downloads.map((d) => d.episodes)).toEqual([[3], [4]]);
++    const none = planDownloads(results, rule, frieren2, new Set([]), { minSeeders: 1 });
++    expect(none.downloads.map((d) => d.episodes)).toEqual([[1, 2, 3, 4]]);
++  });
++});
++
++describe('MissingService', () => {
++  let dir: string;
++  let core: Core;
++  let show: string;
++  const fetchText = vi.fn(async (url: string) => {
++    if (url.startsWith('https://nyaa.si/'))
++      return `<?xml version="1.0"?><rss version="2.0" xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel><title>Nyaa</title>
++${[1, 2, 3, 4, 5]
++  .map(
++    (
++      e,
++    ) => `<item><title>[SubsPlease] Chii Fuyo - 0${e} (720p) [ABC${e}].mkv</title><guid>g${e}</guid>
++<link>https://nyaa.si/view/${e}</link><nyaa:infoHash>${hash(e)}</nyaa:infoHash><nyaa:seeders>${e === 5 ? 0 : 12}</nyaa:seeders></item>`,
++  )
++  .join('\n')}</channel></rss>`;
++    return JSON.stringify([
++      {
++        title: '[SubsPlease] Chii Fuyo - 04 (720p) [ABC4].mkv',
++        info_hash: hash(4),
++        seeders: 40,
++        total_size: 1,
++      },
++    ]);
++  });
++
++  const input = (savePath: string): RuleInput => ({
++    name: 'Chii Fuyo',
++    enabled: true,
++    priority: 0,
++    mustContain: ['Chii Fuyo 720'],
++    mustNotContain: [],
++    useRegex: false,
++    smartEpisodeFilter: false,
++    assignedFeedIds: [],
++    tags: [],
++    addPaused: false,
++    savePath,
++  });
++
++  beforeEach(() => {
++    fetchText.mockClear();
++    dir = mkdtempSync(join(tmpdir(), 'draxmax-missing-'));
++    show = join(dir, 'Anime', 'Chii Fuyo', 'S01');
++    mkdirSync(show, { recursive: true });
++    core = createCore({
++      configPath: join(dir, 'c'),
++      downloadPath: join(dir, 'd'),
++      engine: new FakeEngine(),
++      env: {},
++      noSchedulers: true,
++      missingFetch: { fetchText },
++    });
++  });
++  afterEach(async () => {
++    await core.shutdown();
++    rmSync(dir, { recursive: true, force: true });
++  });
++
++  it('adds released episodes the folder lacks into the rule folder, once', async () => {
++    writeFileSync(join(show, '[SubsPlease] Chii Fuyo - 01 (720p) [ABC1].mkv'), '');
++    writeFileSync(join(show, '[SubsPlease] Chii Fuyo - 03 (720p) [ABC3].mkv'), '');
++    await core.rss.saveRule(input(show));
++
++    await core.missing.run({ force: true });
++    const s = core.missing.get();
++    expect(s.sources).toEqual(['Nyaa', 'AnimeTosho']);
++    expect(s.shows[0]).toMatchObject({
++      title: 'Chii Fuyo',
++      season: 1,
++      have: [1, 3],
++      missing: [2, 4, 5],
++      added: [2, 4],
++      unavailable: [5],
++      state: 'missing',
++    });
++    const added = core.torrents.list();
++    expect(added.map((t) => t.infoHash).sort()).toEqual([hash(2), hash(4)]);
++    expect(added.every((t) => t.savePath === show)).toBe(true);
++    expect(core.rss.history().map((h) => h.feedId)).toEqual(['missing', 'missing']);
++
++    // Episodes in the client (or downloaded before) aren't added again.
++    await core.missing.run({ force: true });
++    expect(core.torrents.list()).toHaveLength(2);
++    expect(core.missing.get().shows[0]).toMatchObject({ have: [1, 2, 3, 4], added: [] });
++  });
++
++  it('skips empty folders and runs only when enabled unless forced', async () => {
++    await core.rss.saveRule(input(show));
++    core.settings.update({ missingEnabled: false });
++    await core.missing.run();
++    expect(core.missing.get().shows[0]!.state).toBe('pending');
++    await core.missing.run({ force: true });
++    expect(core.missing.get().shows[0]!.state).toBe('empty');
++    expect(fetchText).not.toHaveBeenCalled();
++  });
++});
+diff --git a/packages/core/src/missing/plan.ts b/packages/core/src/missing/plan.ts
+new file mode 100644
+index 0000000..a05b3f6
+--- /dev/null
++++ b/packages/core/src/missing/plan.ts
+@@ -0,0 +1,134 @@
++import type { DownloadRule } from '@draxmax/shared';
++import { parseRelease } from '../media/parse-title.ts';
++import { matchesEpisodeFilter, matchesText, parseEpisodeFilter } from '../rss/rules.ts';
++import type { SearchResult } from './sources.ts';
++
++/** The show and season a rule's folder holds, inferred from the episodes in it. */
++export interface Identity {
++  key: string;
++  title: string;
++  season: number;
++  anime: boolean;
++}
++
++/** Most common show/season among episode names (season packs and movies don't count). */
++export function inferIdentity(names: string[]): Identity | null {
++  const counts = new Map<string, { id: Identity; n: number; anime: number }>();
++  for (const name of names) {
++    const r = parseRelease(name);
++    if (!r.key || r.season === undefined || r.episodes.length === 0) continue;
++    const k = `${r.key}|${r.season}`;
++    const c = counts.get(k) ?? {
++      id: { key: r.key, title: r.title, season: r.season, anime: false },
++      n: 0,
++      anime: 0,
++    };
++    c.n++;
++    if (r.anime) c.anime++;
++    counts.set(k, c);
++  }
++  const best = [...counts.values()].sort((a, b) => b.n - a.n)[0];
++  return best ? { ...best.id, anime: best.anime * 2 >= best.n } : null;
++}
++
++/** Episode numbers of `id` among release/file names. */
++export function episodesOf(names: string[], id: Identity): Set<number> {
++  const out = new Set<number>();
++  for (const name of names) {
++    const r = parseRelease(name);
++    if (r.key === id.key && r.season === id.season) for (const e of r.episodes) out.add(e);
++  }
++  return out;
++}
++
++/** Same, from RSS history episode keys ("show|s2e5"). */
++export function episodesFromKeys(keys: Iterable<string>, id: Identity): Set<number> {
++  const out = new Set<number>();
++  const prefix = `${id.key}|s${id.season}e`;
++  for (const k of keys)
++    if (k.startsWith(prefix)) {
++      const n = Number(k.slice(prefix.length));
++      if (Number.isInteger(n)) out.add(n);
++    }
++  return out;
++}
++
++/**
++ * Search text for a rule: its first "must contain" alternative without wildcards and bare
++ * resolutions (indexers match whole words, "720" wouldn't find "720p"; the rule's own filter
++ * still checks it). Regex rules fall back to the show title and season.
++ */
++export function searchQuery(rule: Pick<DownloadRule, 'mustContain' | 'useRegex'>, id: Identity) {
++  const first = rule.useRegex ? '' : (rule.mustContain.find((s) => s.trim()) ?? '');
++  const words = (first.split('|')[0] ?? '')
++    .replace(/[*?]/g, ' ')
++    .split(/\s+/)
++    .filter((w) => w && !/^\d{3,4}p?$/i.test(w));
++  if (words.length) return words.join(' ');
++  const season = id.season > 1 ? ` S${String(id.season).padStart(2, '0')}` : '';
++  return id.anime && id.season > 1 ? `${id.title} S${id.season}` : `${id.title}${season}`;
++}
++
++export interface PlannedDownload {
++  result: SearchResult;
++  episodes: number[];
++}
++
++export interface Plan {
++  /** Released episodes the sources know about (from the first owned episode on). */
++  released: number[];
++  missing: number[];
++  downloads: PlannedDownload[];
++  /** Missing episodes without an acceptable release. */
++  unavailable: number[];
++}
++
++/**
++ * Chooses releases for missing episodes. Only results that pass the rule's own filters and
++ * are the same show and season are considered, and only episodes from the first one owned
++ * onwards (earlier ones were probably watched and deleted). A batch is taken only when every
++ * episode in it is missing; otherwise single episodes with the most seeders win.
++ */
++export function planDownloads(
++  results: SearchResult[],
++  rule: Pick<DownloadRule, 'mustContain' | 'mustNotContain' | 'useRegex' | 'episodeFilter'>,
++  id: Identity,
++  have: Set<number>,
++  opts: { minSeeders: number },
++): Plan {
++  const floor = have.size ? Math.min(...have) : 1;
++  const filter = rule.episodeFilter?.trim() ? parseEpisodeFilter(rule.episodeFilter) : null;
++  const candidates = results.flatMap((result) => {
++    const r = parseRelease(result.title);
++    if (r.key !== id.key || r.season !== id.season || r.episodes.length === 0) return [];
++    if (!matchesText(rule, result.title)) return [];
++    if (filter && !matchesEpisodeFilter(filter, r)) return [];
++    return [{ result, episodes: r.episodes.filter((e) => e >= floor), repack: r.repack }];
++  });
++  const released = [...new Set(candidates.flatMap((c) => c.episodes))].sort((a, b) => a - b);
++  const missing = released.filter((e) => !have.has(e));
++  const missingSet = new Set(missing);
++
++  const usable = candidates
++    .filter(
++      (c) =>
++        c.episodes.length > 0 &&
++        c.episodes.every((e) => missingSet.has(e)) &&
++        (c.result.seeders === null || c.result.seeders >= opts.minSeeders),
++    )
++    .sort(
++      (a, b) =>
++        b.episodes.length - a.episodes.length ||
++        Number(b.repack) - Number(a.repack) ||
++        (b.result.seeders ?? 0) - (a.result.seeders ?? 0),
++    );
++  const claimed = new Set<number>();
++  const downloads: PlannedDownload[] = [];
++  for (const c of usable) {
++    if (c.episodes.some((e) => claimed.has(e))) continue;
++    for (const e of c.episodes) claimed.add(e);
++    downloads.push({ result: c.result, episodes: [...c.episodes].sort((a, b) => a - b) });
++  }
++  downloads.sort((a, b) => a.episodes[0]! - b.episodes[0]!);
++  return { released, missing, downloads, unavailable: missing.filter((e) => !claimed.has(e)) };
++}
+diff --git a/packages/core/src/missing/sources.ts b/packages/core/src/missing/sources.ts
+new file mode 100644
+index 0000000..4a561f1
+--- /dev/null
++++ b/packages/core/src/missing/sources.ts
+@@ -0,0 +1,155 @@
++import { fetchBytes } from '../net/http.ts';
++import { parseFeed } from '../rss/feed-parser.ts';
++
++/** One release offered by a search source. */
++export interface SearchResult {
++  title: string;
++  /** Magnet link or .torrent URL. */
++  url: string;
++  seeders: number | null;
++  size: number | null;
++  source: string;
++}
++
++export interface SearchSource {
++  name: string;
++  /** Anime-only indexers are skipped for live-action shows. */
++  animeOnly: boolean;
++  search(query: string): Promise<SearchResult[]>;
++}
++
++export type FetchText = (url: string, accept: string) => Promise<string>;
++
++export const defaultFetchText: FetchText = async (url, accept) => {
++  const { body } = await fetchBytes(url, {
++    maxBytes: 8 * 1024 * 1024,
++    timeoutMs: 30_000,
++    headers: { accept },
++  });
++  return Buffer.from(body).toString('utf8');
++};
++
++/** Serialises calls and keeps at least `ms` between them (be polite to public indexers). */
++function paced<T>(ms: number, fn: (q: string) => Promise<T>): (q: string) => Promise<T> {
++  let queue: Promise<unknown> = Promise.resolve();
++  let last = 0;
++  return (q) => {
++    const run = queue.then(async () => {
++      const wait = last + ms - Date.now();
++      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
++      last = Date.now();
++      return fn(q);
++    });
++    queue = run.catch(() => undefined);
++    return run;
++  };
++}
++
++const RSS_ACCEPT = 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.5';
++
++async function searchRss(fetchText: FetchText, url: string, source: string) {
++  const feed = await parseFeed(await fetchText(url, RSS_ACCEPT)).catch(() => {
++    throw new Error(`${source} returned an invalid response`);
++  });
++  return feed.items.flatMap((i): SearchResult[] =>
++    i.torrentURL
++      ? [{ title: i.title, url: i.torrentURL, seeders: i.seeders, size: i.size, source }]
++      : [],
++  );
++}
++
++/** nyaa.si RSS search (anime, all languages). */
++export function nyaaSource(fetchText: FetchText, intervalMs = 3_000): SearchSource {
++  return {
++    name: 'Nyaa',
++    animeOnly: true,
++    search: paced(intervalMs, (q) =>
++      searchRss(
++        fetchText,
++        `https://nyaa.si/?page=rss&c=1_0&f=0&q=${encodeURIComponent(q)}`,
++        'Nyaa',
++      ),
++    ),
++  };
++}
++
++interface ToshoItem {
++  title?: string;
++  magnet_uri?: string | null;
++  torrent_url?: string | null;
++  info_hash?: string | null;
++  seeders?: number | null;
++  total_size?: number | null;
++}
++
++/** AnimeTosho JSON search (indexes Nyaa, TokyoTosho and others). */
++export function animeToshoSource(fetchText: FetchText, intervalMs = 3_000): SearchSource {
++  return {
++    name: 'AnimeTosho',
++    animeOnly: true,
++    search: paced(intervalMs, async (q) => {
++      const raw = await fetchText(
++        `https://feed.animetosho.org/json?q=${encodeURIComponent(q)}`,
++        'application/json',
++      );
++      let items: unknown;
++      try {
++        items = JSON.parse(raw);
++      } catch {
++        throw new Error('AnimeTosho returned an invalid response');
++      }
++      if (!Array.isArray(items)) return [];
++      return (items as ToshoItem[]).flatMap((i): SearchResult[] => {
++        const hash = i.info_hash && /^[0-9a-f]{40}$/i.test(i.info_hash) ? i.info_hash : null;
++        const url =
++          i.magnet_uri ||
++          (hash ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(i.title ?? '')}` : null) ||
++          i.torrent_url;
++        if (!i.title || !url) return [];
++        return [
++          {
++            title: i.title,
++            url,
++            seeders: typeof i.seeders === 'number' ? i.seeders : null,
++            size: typeof i.total_size === 'number' ? i.total_size : null,
++            source: 'AnimeTosho',
++          },
++        ];
++      });
++    }),
++  };
++}
++
++/** A Torznab endpoint (Prowlarr, Jackett, or a tracker's own), e.g. `http://prowlarr:9696/1/api?apikey=…`. */
++export function torznabSource(
++  endpoint: string,
++  fetchText: FetchText,
++  intervalMs = 2_000,
++): SearchSource {
++  const base = new URL(endpoint);
++  const name = `Torznab: ${base.host}${base.pathname.replace(/\/api\/?$/, '').replace(/\/$/, '')}`;
++  return {
++    name,
++    animeOnly: false,
++    search: paced(intervalMs, (q) => {
++      const url = new URL(base);
++      url.searchParams.set('t', 'search');
++      url.searchParams.set('q', q);
++      return searchRss(fetchText, url.toString(), name);
++    }),
++  };
++}
++
++/** Splits the `torznabUrls` setting into valid http(s) URLs. */
++export function parseTorznabUrls(raw: string): string[] {
++  return raw
++    .split(/[\s,]+/)
++    .map((s) => s.trim())
++    .filter((s) => {
++      try {
++        return /^https?:$/.test(new URL(s).protocol);
++      } catch {
++        return false;
++      }
++    });
++}
+diff --git a/packages/core/src/rss/feed-parser.ts b/packages/core/src/rss/feed-parser.ts
+index 2afe857..fcd29f2 100644
+--- a/packages/core/src/rss/feed-parser.ts
++++ b/packages/core/src/rss/feed-parser.ts
+@@ -9,6 +9,8 @@ export interface ParsedFeedItem {
+   torrentURL: string | null;
+   pubDate: Date;
+   size: number | null;
++  /** Seeders when the feed reports them (Nyaa, Torznab). */
++  seeders: number | null;
+ }
+ 
+ export interface ParsedFeed {
+@@ -34,6 +36,7 @@ const parser = new Parser<Record<string, unknown>, Item>({
+       ['torrent:contentLength', 'contentLength'],
+       ['nyaa:infoHash', 'nyaaInfoHash'],
+       ['nyaa:size', 'nyaaSize'],
++      ['nyaa:seeders', 'nyaaSeeders'],
+       ['torznab:attr', 'torznabAttrs', { keepArray: true }],
+     ],
+   },
+@@ -53,7 +56,7 @@ export function extractTorrentUrl(item: Item): string | null {
+   const enc = item.enclosure;
+   if (enc?.url && (enc.type === 'application/x-bittorrent' || looksLikeTorrent(enc.url)))
+     return enc.url;
+-  const magnet = text(item.magnetURI);
++  const magnet = text(item.magnetURI) ?? torznabAttr(item, 'magneturl');
+   if (magnet && MAGNET_RE.test(magnet)) return magnet;
+   if (looksLikeTorrent(item.link)) return item.link!;
+   if (item.guid && MAGNET_RE.test(item.guid)) return item.guid;
+@@ -86,6 +89,20 @@ function parseSize(item: Item): number | null {
+   return null;
+ }
+ 
++/** `<torznab:attr name="…" value="…"/>` lookup. */
++function torznabAttr(item: Item, name: string): string | undefined {
++  const attrs = item.torznabAttrs;
++  if (!Array.isArray(attrs)) return undefined;
++  for (const a of attrs as { $?: { name?: string; value?: string } }[])
++    if (a?.$?.name?.toLowerCase() === name) return a.$.value;
++  return undefined;
++}
++
++function parseSeeders(item: Item): number | null {
++  const n = Number(text(item.nyaaSeeders) ?? torznabAttr(item, 'seeders') ?? NaN);
++  return Number.isFinite(n) && n >= 0 ? n : null;
++}
++
+ /** Parses RSS/Atom XML into items with stable ids and extracted torrent links. */
+ export async function parseFeed(xml: string): Promise<ParsedFeed> {
+   const feed = await parser.parseString(xml);
+@@ -107,6 +124,7 @@ export async function parseFeed(xml: string): Promise<ParsedFeed> {
+       torrentURL: extractTorrentUrl(item),
+       pubDate,
+       size: parseSize(item),
++      seeders: parseSeeders(item),
+     };
+   });
+   return { title: (typeof feed.title === 'string' && feed.title.trim()) || '', items };
+diff --git a/packages/core/src/settings/settings.ts b/packages/core/src/settings/settings.ts
+index 753a477..daa99be 100644
+--- a/packages/core/src/settings/settings.ts
++++ b/packages/core/src/settings/settings.ts
+@@ -65,6 +65,20 @@ export const settingsSchema = z
+     rssRefreshMinutes: z.number().int().min(5).max(1440).default(30),
+     rssMaxArticlesPerFeed: z.number().int().min(10).max(5000).default(200),
+ 
++    // --- Missing episodes ---------------------------------------------------
++    /** Search for released episodes that RSS rules missed (gaps and newer episodes). */
++    missingEnabled: z.boolean().default(true),
++    /** How often followed (recently active) shows are checked; older shows weekly. */
++    missingIntervalHours: z.number().int().min(1).max(168).default(6),
++    missingUseNyaa: z.boolean().default(true),
++    missingUseAnimeTosho: z.boolean().default(true),
++    /** Torznab endpoints (Prowlarr/Jackett), including `apikey=`, separated by spaces or new lines. */
++    torznabUrls: z.string().trim().max(16_384).default(''),
++    /** Skip releases with fewer seeders (when the source reports them). */
++    missingMinSeeders: z.number().int().min(0).max(1000).default(1),
++    /** Cap on torrents added by one run, so a big backlog arrives in batches. */
++    missingMaxPerRun: z.number().int().min(1).max(500).default(25),
++
+     // --- Media intelligence ------------------------------------------------
+     tmdbApiKey: z.string().trim().max(512).default(''),
+     anilistEnabled: z.boolean().default(true),
+@@ -125,7 +139,7 @@ export const RESTART_KEYS: SettingsKey[] = [
+ ];
+ 
+ /** Values encrypted at rest in settings.json and never returned by the API. */
+-export const SECRET_KEYS = ['tmdbApiKey', 'anilistToken'] as const;
++export const SECRET_KEYS = ['tmdbApiKey', 'anilistToken', 'torznabUrls'] as const;
+ export type SecretKey = (typeof SECRET_KEYS)[number];
+ 
+ /** The DHT port actually used, applying the `torrentPort + 1` default. */
+@@ -155,6 +169,13 @@ const ENV_MAP: Record<string, { key: SettingsKey; kind: Kind }> = {
+   ADD_DEFAULT_TRACKERS: { key: 'addDefaultTrackers', kind: 'bool' },
+   RSS_ENABLED: { key: 'rssEnabled', kind: 'bool' },
+   RSS_REFRESH_MINUTES: { key: 'rssRefreshMinutes', kind: 'int' },
++  MISSING_ENABLED: { key: 'missingEnabled', kind: 'bool' },
++  MISSING_INTERVAL_HOURS: { key: 'missingIntervalHours', kind: 'int' },
++  MISSING_USE_NYAA: { key: 'missingUseNyaa', kind: 'bool' },
++  MISSING_USE_ANIMETOSHO: { key: 'missingUseAnimeTosho', kind: 'bool' },
++  MISSING_MIN_SEEDERS: { key: 'missingMinSeeders', kind: 'int' },
++  MISSING_MAX_PER_RUN: { key: 'missingMaxPerRun', kind: 'int' },
++  TORZNAB_URLS: { key: 'torznabUrls', kind: 'string' },
+   TMDB_API_KEY: { key: 'tmdbApiKey', kind: 'string' },
+   ANILIST_ENABLED: { key: 'anilistEnabled', kind: 'bool' },
+   ANILIST_TOKEN: { key: 'anilistToken', kind: 'string' },
+diff --git a/packages/shared/src/api.ts b/packages/shared/src/api.ts
+index ede7ae1..9c77eb9 100644
+--- a/packages/shared/src/api.ts
++++ b/packages/shared/src/api.ts
+@@ -88,7 +88,8 @@ export type ServerEvent =
+   | { type: 'rss:updated'; feedId: string | null }
+   | { type: 'rss:match'; ruleName: string; title: string; status: 'added' | 'duplicate' }
+   | { type: 'stats:tick'; stats: StatsSnapshot }
+-  | { type: 'upcoming:updated' };
++  | { type: 'upcoming:updated' }
++  | { type: 'missing:updated' };
+ 
+ // --- M2: torrent controls, trackers, categories, settings ---------------------
+ 
+diff --git a/packages/shared/src/media.ts b/packages/shared/src/media.ts
+index f30e407..ed01f9b 100644
+--- a/packages/shared/src/media.ts
++++ b/packages/shared/src/media.ts
+@@ -29,3 +29,39 @@ export interface UpcomingResponse {
+   errors: string[];
+   refreshing: boolean;
+ }
++
++/** One followed show (an RSS rule with a save folder) checked for missing episodes. */
++export interface MissingShowDTO {
++  ruleId: string;
++  ruleName: string;
++  savePath: string;
++  /** Show and season the folder holds, e.g. "Sousou no Frieren" / 2. */
++  title: string | null;
++  season: number | null;
++  /** Episodes on disk, in the client or downloaded before. */
++  have: number[];
++  /** Released episodes (found by the search sources) that are not in `have`. */
++  missing: number[];
++  /** Episodes added to the client by the last check. */
++  added: number[];
++  /** Released episodes no acceptable release was found for (e.g. no seeders). */
++  unavailable: number[];
++  state: 'ok' | 'missing' | 'empty' | 'no-results' | 'error' | 'pending';
++  /** Explanation for `empty`, `no-results` and `error`. */
++  message: string | null;
++  checkedAt: string | null;
++  nextCheckAt: string | null;
++}
++
++export interface MissingResponse {
++  enabled: boolean;
++  shows: MissingShowDTO[];
++  /** Enabled search sources, e.g. ["Nyaa", "AnimeTosho", "Torznab: prowlarr.lan"]. */
++  sources: string[];
++  running: boolean;
++  /** Show currently being checked. */
++  current: string | null;
++  lastRunAt: string | null;
++  /** Torrents added by the last run. */
++  lastRunAdded: number;
++}
+-- 
+2.43.0
+
+
+From ba32058771edebe18f01505c29fb0bc85811a631 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 17:18:14 +0000
+Subject: [PATCH 2/3] Assign feeds to many download rules at once
+
+Selecting rules now offers a feed button that opens a dialog with one
+tri-state checkbox per feed (all / none / some of the selected rules use
+it). Ticking adds the feed to every selected rule, unticking removes it,
+mixed boxes are left alone. Disabled rules that get a feed (e.g. imported
+from qBittorrent without a subscribed feed) can be turned on in the same
+step, and applying to existing articles is opt-in.
+
+- POST /api/rss/rules/feeds updates all rules in one request
+- Rules list can be filtered by feed, or by "no feed" (applies to all)
+- Warns when rules that used every feed get limited, or end up with none
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013nmSf2zmYoNEfzcNutPGUX
+---
+ README.md                                   |   1 +
+ apps/server/src/routes/rss.ts               |   4 +
+ apps/web/src/components/RuleFeedsDialog.tsx | 191 ++++++++++++++++++++
+ apps/web/src/lib/api.ts                     |   4 +
+ apps/web/src/pages/Rss.tsx                  |  58 +++++-
+ packages/core/src/rss/rss-service.test.ts   |  68 +++++++
+ packages/core/src/rss/rss-service.ts        |  36 ++++
+ packages/shared/src/api.ts                  |  18 ++
+ 8 files changed, 371 insertions(+), 9 deletions(-)
+ create mode 100644 apps/web/src/components/RuleFeedsDialog.tsx
+
+diff --git a/README.md b/README.md
+index e0aa905..517f859 100644
+--- a/README.md
++++ b/README.md
+@@ -115,6 +115,7 @@ Everything is configurable in **Settings**. Every value can also be set by an en
+   - The episode filter takes `1x01-1x10;2x05;3x-` (open ranges also include later seasons).
+   - The smart filter never downloads the same episode twice. A REPACK/PROPER is allowed once.
+   - Saving a rule also applies it to articles already in your feeds.
++  - **Feeds for many rules at once:** tick rules (Shift-click for a range, or filter by name or by feed and tick all), then use the feed button above the list. Tick a feed to add it to every selected rule, untick it to remove it; mixed boxes stay as they are. Disabled rules that get a feed can be turned on in the same step.
+   - Each rule can save to its own folder (*Save to*), e.g. `/downloads/Anime/<Show>/S01`. The checkbox in the rule list turns a rule on or off.
+   - **Coming from qBittorrent?** Export your rules there (RSS → Download Rules… → right-click the list → *Export rules…*). Then use the import button above the rule list. Feeds are matched by URL, and missing ones can be added for you. Rules that end up without a subscribed feed are imported disabled. By default only future articles are downloaded. qBittorrent's per-rule list of already-matched episodes isn't imported.
+ - **Missing episodes:** RSS only sees the latest items in a feed, so episodes released while DraxMax was off, or before you added a rule, never arrive that way. Every enabled rule with a *Save to* folder is checked regularly, every 6 h for shows active in the last 30 days and weekly for the rest:
+diff --git a/apps/server/src/routes/rss.ts b/apps/server/src/routes/rss.ts
+index 68f9431..90c274c 100644
+--- a/apps/server/src/routes/rss.ts
++++ b/apps/server/src/routes/rss.ts
+@@ -7,6 +7,7 @@ import {
+   feedPatchSchema,
+   markReadSchema,
+   qbRuleImportSchema,
++  ruleFeedsSchema,
+   ruleIdsSchema,
+   ruleSchema,
+ } from '@draxmax/shared';
+@@ -84,6 +85,9 @@ export async function rssRoutes(app: FastifyInstance, { core }: { core: Core }):
+   app.post('/api/rss/rules/delete', async (req) => ({
+     deleted: rss.deleteRules(ruleIdsSchema.parse(req.body).ids),
+   }));
++  app.post('/api/rss/rules/feeds', async (req) =>
++    rss.setRuleFeeds(ruleFeedsSchema.parse(req.body)),
++  );
+   app.post('/api/rss/rules/import', async (req) => {
+     const { rules, ...opts } = qbRuleImportSchema.parse(req.body);
+     return rss.importQbRules(rules, opts);
+diff --git a/apps/web/src/components/RuleFeedsDialog.tsx b/apps/web/src/components/RuleFeedsDialog.tsx
+new file mode 100644
+index 0000000..50e582a
+--- /dev/null
++++ b/apps/web/src/components/RuleFeedsDialog.tsx
+@@ -0,0 +1,191 @@
++import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
++import { AlertTriangle, Loader2 } from 'lucide-react';
++import { useState } from 'react';
++import { toast } from 'sonner';
++import type { RuleDTO } from '@draxmax/shared';
++import { Button } from '@/components/ui/button';
++import { Dialog, DialogContent } from '@/components/ui/dialog';
++import { api } from '@/lib/api';
++
++type Change = 'add' | 'remove';
++
++/**
++ * Adds or removes feeds on several rules at once. Each feed's box shows whether all, none or
++ * some of the selected rules use it; a mixed box is left alone until it is clicked.
++ */
++export function RuleFeedsDialog({
++  rules,
++  open,
++  onClose,
++}: {
++  rules: RuleDTO[];
++  open: boolean;
++  onClose(): void;
++}) {
++  return (
++    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
++      <DialogContent
++        title={rules.length === 1 ? 'Feeds for 1 rule' : `Feeds for ${rules.length} rules`}
++        description="Tick a feed to add it to every selected rule, untick it to remove it."
++      >
++        {open && <Form key={rules.map((r) => r.id).join()} rules={rules} onClose={onClose} />}
++      </DialogContent>
++    </Dialog>
++  );
++}
++
++function Form({ rules, onClose }: { rules: RuleDTO[]; onClose(): void }) {
++  const qc = useQueryClient();
++  const { data: feeds = [] } = useQuery({ queryKey: ['rss', 'feeds'], queryFn: api.feeds });
++  const [changes, setChanges] = useState<Map<string, Change>>(new Map());
++  const [enable, setEnable] = useState(true);
++  const [applyToExisting, setApplyToExisting] = useState(false);
++
++  const usedBy = (feedId: string) => rules.filter((r) => r.assignedFeedIds.includes(feedId)).length;
++  /** What the box shows: on, off, or mixed (unchanged and only some rules use it). */
++  const shown = (feedId: string): 'on' | 'off' | 'mixed' => {
++    const c = changes.get(feedId);
++    if (c) return c === 'add' ? 'on' : 'off';
++    const n = usedBy(feedId);
++    return n === rules.length ? 'on' : n === 0 ? 'off' : 'mixed';
++  };
++  function cycle(feedId: string) {
++    const n = usedBy(feedId);
++    const initial = n === rules.length ? 'on' : n === 0 ? 'off' : 'mixed';
++    const now = shown(feedId);
++    // mixed → on → off → mixed; plain boxes just toggle.
++    const target =
++      now === 'mixed' ? 'on' : now === 'on' ? 'off' : initial === 'mixed' ? 'mixed' : 'on';
++    const next = new Map(changes);
++    if (target === initial) next.delete(feedId);
++    else next.set(feedId, target === 'on' ? 'add' : 'remove');
++    setChanges(next);
++  }
++
++  const add = [...changes].filter(([, c]) => c === 'add').map(([id]) => id);
++  const remove = [...changes].filter(([, c]) => c === 'remove').map(([id]) => id);
++  const after = (r: RuleDTO) =>
++    [...new Set([...r.assignedFeedIds, ...add])].filter((id) => !remove.includes(id));
++  const allFeedsNow = rules.filter((r) => r.assignedFeedIds.length === 0).length;
++  const becomeAll = rules.filter((r) => r.assignedFeedIds.length > 0 && after(r).length === 0);
++  const disabled = rules.filter((r) => !r.enabled);
++  const wouldEnable = disabled.filter((r) => after(r).length > 0).length;
++
++  const save = useMutation({
++    mutationFn: () =>
++      api.setRuleFeeds({ ids: rules.map((r) => r.id), add, remove, enable, applyToExisting }),
++    onSuccess: (res) => {
++      toast.success(
++        `${res.updated} ${res.updated === 1 ? 'rule' : 'rules'} updated` +
++          (res.enabled ? `, ${res.enabled} turned on` : ''),
++      );
++      void qc.invalidateQueries({ queryKey: ['rss'] });
++      onClose();
++    },
++    onError: (e) => toast.error(e.message),
++  });
++
++  if (feeds.length === 0)
++    return (
++      <p className="py-6 text-center text-sm text-muted">
++        No feeds yet. Add one on the Feeds tab first.
++      </p>
++    );
++
++  return (
++    <form
++      className="space-y-4"
++      onSubmit={(e) => {
++        e.preventDefault();
++        save.mutate();
++      }}
++    >
++      <ul className="max-h-72 space-y-0.5 overflow-y-auto rounded-xl bg-surface-2 p-1.5">
++        {feeds.map((f) => {
++          const state = shown(f.id);
++          const n = usedBy(f.id);
++          return (
++            <li key={f.id}>
++              <label className="flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 hover:bg-surface-hover">
++                <input
++                  type="checkbox"
++                  checked={state === 'on'}
++                  ref={(el) => {
++                    if (el) el.indeterminate = state === 'mixed';
++                  }}
++                  onChange={() => cycle(f.id)}
++                  className="size-4 shrink-0 accent-[var(--accent)]"
++                />
++                <span className="min-w-0 flex-1">
++                  <span className="block truncate text-sm" title={f.url}>
++                    {f.title}
++                  </span>
++                  <span className="block text-xs text-muted">
++                    {changes.get(f.id) === 'add'
++                      ? `Will be added to ${rules.length - n} ${rules.length - n === 1 ? 'rule' : 'rules'}`
++                      : changes.get(f.id) === 'remove'
++                        ? `Will be removed from ${n} ${n === 1 ? 'rule' : 'rules'}`
++                        : `Used by ${n} of ${rules.length}`}
++                  </span>
++                </span>
++              </label>
++            </li>
++          );
++        })}
++      </ul>
++
++      {allFeedsNow > 0 && add.length > 0 && (
++        <p className="flex gap-2 text-xs text-muted">
++          <AlertTriangle className="size-4 shrink-0 text-warning" />
++          {allFeedsNow} selected {allFeedsNow === 1 ? 'rule applies' : 'rules apply'} to every feed
++          now; after this {allFeedsNow === 1 ? 'it' : 'they'} only use the ticked feeds.
++        </p>
++      )}
++      {becomeAll.length > 0 && (
++        <p className="flex gap-2 text-xs text-muted">
++          <AlertTriangle className="size-4 shrink-0 text-warning" />
++          {becomeAll.length} {becomeAll.length === 1 ? 'rule is' : 'rules are'} left without feeds
++          and will apply to every feed.
++        </p>
++      )}
++
++      <div className="space-y-2 text-sm">
++        {disabled.length > 0 && (
++          <label className="flex items-center gap-2">
++            <input
++              type="checkbox"
++              checked={enable}
++              onChange={(e) => setEnable(e.target.checked)}
++              className="size-4 accent-[var(--accent)]"
++            />
++            Turn on disabled rules that get a feed
++            {enable && wouldEnable > 0 && <span className="text-muted">({wouldEnable})</span>}
++          </label>
++        )}
++        <label className="flex items-center gap-2">
++          <input
++            type="checkbox"
++            checked={applyToExisting}
++            onChange={(e) => setApplyToExisting(e.target.checked)}
++            className="size-4 accent-[var(--accent)]"
++          />
++          Also download matching articles already in these feeds
++        </label>
++      </div>
++
++      <div className="flex justify-end gap-2">
++        <Button variant="ghost" onClick={onClose}>
++          Cancel
++        </Button>
++        <Button
++          type="submit"
++          variant="primary"
++          disabled={save.isPending || (changes.size === 0 && !(enable && wouldEnable > 0))}
++        >
++          {save.isPending && <Loader2 className="animate-spin" />}
++          Apply
++        </Button>
++      </div>
++    </form>
++  );
++}
+diff --git a/apps/web/src/lib/api.ts b/apps/web/src/lib/api.ts
+index f425079..608186b 100644
+--- a/apps/web/src/lib/api.ts
++++ b/apps/web/src/lib/api.ts
+@@ -3,6 +3,8 @@ import type {
+   DirListing,
+   QbRuleImportRequest,
+   RuleImportResult,
++  RuleFeedsRequest,
++  RuleFeedsResult,
+   FeedDTO,
+   RssHistoryDTO,
+   RuleDTO,
+@@ -182,6 +184,8 @@ export const api = {
+     request<{ deleted: number }>('POST', '/api/rss/rules/delete', { ids }),
+   importQbRules: (body: QbRuleImportRequest) =>
+     request<RuleImportResult>('POST', '/api/rss/rules/import', body),
++  setRuleFeeds: (body: Partial<RuleFeedsRequest> & { ids: string[] }) =>
++    request<RuleFeedsResult>('POST', '/api/rss/rules/feeds', body),
+   previewRule: (r: RuleInput) => request<ArticleDTO[]>('POST', '/api/rss/rules/preview', r),
+   missing: () => request<MissingResponse>('GET', '/api/missing'),
+   checkMissing: (ruleIds?: string[]) =>
+diff --git a/apps/web/src/pages/Rss.tsx b/apps/web/src/pages/Rss.tsx
+index 816a9a3..8b19fb5 100644
+--- a/apps/web/src/pages/Rss.tsx
++++ b/apps/web/src/pages/Rss.tsx
+@@ -20,6 +20,7 @@ import { toast } from 'sonner';
+ import type { ArticleDTO, FeedDTO, RuleDTO, RuleImportResult, RuleInput } from '@draxmax/shared';
+ import { PathInput } from '@/components/FolderPicker';
+ import { MissingTab } from '@/components/MissingEpisodes';
++import { RuleFeedsDialog } from '@/components/RuleFeedsDialog';
+ import { Badge } from '@/components/ui/badge';
+ import { Button } from '@/components/ui/button';
+ import { Dialog, DialogContent } from '@/components/ui/dialog';
+@@ -32,6 +33,7 @@ import { formatBytes } from '@/lib/format';
+ import { cn } from '@/lib/utils';
+ 
+ const ALL = '__all';
++const NO_FEEDS = '__none';
+ 
+ function timeAgo(iso: string | null): string {
+   if (!iso) return 'never';
+@@ -570,14 +572,23 @@ function RulesTab() {
+   const [anchor, setAnchor] = useState<string | null>(null);
+   const [confirmDelete, setConfirmDelete] = useState(false);
+   const [ruleQuery, setRuleQuery] = useState('');
++  const [editFeeds, setEditFeeds] = useState(false);
++  const { data: feeds = [] } = useQuery({ queryKey: ['rss', 'feeds'], queryFn: api.feeds });
++  // '' = any feed, NO_FEEDS = rules without feeds (they apply to every feed), else a feed id.
++  const [feedFilter, setFeedFilter] = useState('');
+   // Every word must appear in the name or a "must contain" line.
+   const words = ruleQuery.toLowerCase().split(/\s+/).filter(Boolean);
+-  const visible = words.length
+-    ? rules.filter((r) => {
+-        const text = `${r.name}\n${r.mustContain.join('\n')}`.toLowerCase();
+-        return words.every((w) => text.includes(w));
+-      })
+-    : rules;
++  const filtering = words.length > 0 || feedFilter !== '';
++  const visible = rules.filter((r) => {
++    if (
++      feedFilter === NO_FEEDS
++        ? r.assignedFeedIds.length > 0
++        : feedFilter && !r.assignedFeedIds.includes(feedFilter)
++    )
++      return false;
++    const text = `${r.name}\n${r.mustContain.join('\n')}`.toLowerCase();
++    return words.every((w) => text.includes(w));
++  });
+   // Bulk actions only apply to rules that are shown.
+   const checked = visible.filter((r) => checkedIds.has(r.id));
+   const allChecked = visible.length > 0 && checked.length === visible.length;
+@@ -654,12 +665,24 @@ function RulesTab() {
+               : `Rules${
+                   rules.length === 0
+                     ? ''
+-                    : words.length
++                    : filtering
+                       ? ` (${visible.length} of ${rules.length})`
+                       : ` (${rules.length})`
+                 }`}
+           </span>
+           <span className="flex-1" />
++          {checked.length > 0 && (
++            <Tooltip content="Add or remove feeds on the selected rules">
++              <Button
++                size="icon-sm"
++                variant="ghost"
++                aria-label={`Feeds for ${checked.length} selected rules`}
++                onClick={() => setEditFeeds(true)}
++              >
++                <Rss />
++              </Button>
++            </Tooltip>
++          )}
+           {checked.length > 0 && (
+             <Tooltip content="Delete selected rules (Del)">
+               <Button
+@@ -717,6 +740,22 @@ function RulesTab() {
+               aria-label="Search rules"
+               className="h-9 pl-9"
+             />
++            {feeds.length > 0 && (
++              <select
++                aria-label="Filter rules by feed"
++                value={feedFilter}
++                onChange={(e) => setFeedFilter(e.target.value)}
++                className="mt-1.5 h-8 w-full rounded-xl border bg-surface-2 px-2.5 text-xs text-muted"
++              >
++                <option value="">Any feed</option>
++                <option value={NO_FEEDS}>No feed (applies to all feeds)</option>
++                {feeds.map((f) => (
++                  <option key={f.id} value={f.id}>
++                    Uses {f.title}
++                  </option>
++                ))}
++              </select>
++            )}
+           </div>
+         )}
+         <ul
+@@ -774,12 +813,12 @@ function RulesTab() {
+             </li>
+           ))}
+         </ul>
+-        {words.length > 0 && visible.length === 0 && (
++        {filtering && visible.length === 0 && (
+           <p className="px-3 py-6 text-center text-sm text-muted">No rules match.</p>
+         )}
+         {rules.length > 1 && checked.length === 0 && (
+           <p className="hidden px-3 pt-2 text-xs text-muted lg:block">
+-            Tick rules, or Ctrl/Shift-click them, to delete several at once.
++            Tick rules, or Ctrl/Shift-click them, to change their feeds or delete several at once.
+           </p>
+         )}
+         {rules.length === 0 && selected !== 'new' && (
+@@ -805,6 +844,7 @@ function RulesTab() {
+         )}
+       </section>
+       <ImportRulesDialog rules={importing} onClose={() => setImporting(null)} />
++      <RuleFeedsDialog rules={checked} open={editFeeds} onClose={() => setEditFeeds(false)} />
+       <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+         <DialogContent
+           title={checked.length === 1 ? 'Delete rule?' : `Delete ${checked.length} rules?`}
+diff --git a/packages/core/src/rss/rss-service.test.ts b/packages/core/src/rss/rss-service.test.ts
+index 12c4103..3e303f0 100644
+--- a/packages/core/src/rss/rss-service.test.ts
++++ b/packages/core/src/rss/rss-service.test.ts
+@@ -228,4 +228,72 @@ describe('RssService', () => {
+     expect(core.rss.deleteRules([...ids, ids[0]!, 'missing'])).toBe(2);
+     expect(core.rss.rules()).toEqual([]);
+   });
++
++  it('adds and removes feeds on several rules, turning on disabled ones that get a feed', async () => {
++    xml = feedXml([]);
++    const a = await core.rss.addFeed('https://feeds.example/a');
++    const b = await core.rss.addFeed('https://feeds.example/b');
++    const base = {
++      priority: 0,
++      mustContain: [],
++      mustNotContain: [],
++      useRegex: false,
++      smartEpisodeFilter: false,
++      tags: [],
++      addPaused: false,
++    };
++    const one = await core.rss.saveRule({
++      ...base,
++      name: 'One',
++      enabled: false,
++      assignedFeedIds: [],
++    });
++    const two = await core.rss.saveRule({
++      ...base,
++      name: 'Two',
++      enabled: true,
++      assignedFeedIds: [a.id],
++    });
++    const untouched = await core.rss.saveRule({
++      ...base,
++      name: 'Three',
++      enabled: false,
++      assignedFeedIds: [],
++    });
++
++    expect(
++      await core.rss.setRuleFeeds({
++        ids: [one.id, two.id],
++        add: [b.id],
++        remove: [a.id],
++        enable: true,
++        applyToExisting: false,
++      }),
++    ).toEqual({ updated: 2, enabled: 1 });
++    const byName = new Map(core.rss.rules().map((r) => [r.name, r]));
++    expect(byName.get('One')).toMatchObject({ enabled: true, assignedFeedIds: [b.id] });
++    expect(byName.get('Two')).toMatchObject({ enabled: true, assignedFeedIds: [b.id] });
++    expect(byName.get('Three')).toMatchObject({ enabled: false, assignedFeedIds: [] });
++    expect(untouched.id).toBe(byName.get('Three')!.id);
++
++    // Nothing to change: no writes.
++    expect(
++      await core.rss.setRuleFeeds({
++        ids: [one.id],
++        add: [b.id],
++        remove: [],
++        enable: true,
++        applyToExisting: false,
++      }),
++    ).toEqual({ updated: 0, enabled: 0 });
++    await expect(
++      core.rss.setRuleFeeds({
++        ids: [one.id],
++        add: ['nope'],
++        remove: [],
++        enable: false,
++        applyToExisting: false,
++      }),
++    ).rejects.toThrow(/Feed not found/);
++  });
+ });
+diff --git a/packages/core/src/rss/rss-service.ts b/packages/core/src/rss/rss-service.ts
+index 7dd9407..29b2117 100644
+--- a/packages/core/src/rss/rss-service.ts
++++ b/packages/core/src/rss/rss-service.ts
+@@ -4,6 +4,8 @@ import type {
+   FeedDTO,
+   RssHistoryDTO,
+   RuleDTO,
++  RuleFeedsRequest,
++  RuleFeedsResult,
+   RuleImportResult,
+   RuleInput,
+ } from '@draxmax/shared';
+@@ -338,6 +340,40 @@ export class RssService {
+     return doomed.length;
+   }
+ 
++  /**
++   * Adds and removes feeds on several rules in one go. A rule left with no feeds applies to
++   * every feed, as in the editor. With `enable`, disabled rules that end up with a feed are
++   * turned on (rules imported without a subscribed feed come in disabled).
++   */
++  async setRuleFeeds(req: RuleFeedsRequest): Promise<RuleFeedsResult> {
++    const known = new Set(this.repo.feeds().map((f) => f.id));
++    const unknown = req.add.find((id) => !known.has(id));
++    if (unknown) throw new CoreError('invalid_input', 'Feed not found');
++    const remove = new Set(req.remove);
++    const ids = new Set(req.ids);
++    const changed: RuleRow[] = [];
++    let enabled = 0;
++    for (const rule of this.repo.rules()) {
++      if (!ids.has(rule.id)) continue;
++      const feeds = [
++        ...new Set([...rule.assignedFeedIds, ...req.add].filter((id) => !remove.has(id))),
++      ];
++      const turnOn = req.enable && !rule.enabled && feeds.length > 0;
++      const sameFeeds =
++        feeds.length === rule.assignedFeedIds.length &&
++        feeds.every((id) => rule.assignedFeedIds.includes(id));
++      if (sameFeeds && !turnOn) continue;
++      const next = { ...rule, assignedFeedIds: feeds, enabled: rule.enabled || turnOn };
++      this.repo.saveRule(next);
++      changed.push(next);
++      if (turnOn) enabled++;
++    }
++    if (req.applyToExisting)
++      for (const rule of changed) if (rule.enabled) await this.applyRuleToExisting(rule);
++    this.deps.events.emit('rss:updated', null);
++    return { updated: changed.length, enabled };
++  }
++
+   /** Which current articles a (possibly unsaved) rule would match, ignoring history. */
+   preview(input: RuleInput): ArticleDTO[] {
+     try {
+diff --git a/packages/shared/src/api.ts b/packages/shared/src/api.ts
+index 9c77eb9..6690e1c 100644
+--- a/packages/shared/src/api.ts
++++ b/packages/shared/src/api.ts
+@@ -244,6 +244,24 @@ export type RuleInput = z.infer<typeof ruleSchema>;
+ 
+ export const ruleIdsSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(5000) });
+ 
++/** Adds and removes feeds on several rules at once. */
++export const ruleFeedsSchema = z.object({
++  ids: z.array(z.string().min(1)).min(1).max(5000),
++  add: z.array(z.string().min(1)).max(500).default([]),
++  remove: z.array(z.string().min(1)).max(500).default([]),
++  /** Turn on disabled rules that end up with at least one feed. */
++  enable: z.boolean().default(false),
++  /** Run changed rules against articles already in their feeds (may download a backlog). */
++  applyToExisting: z.boolean().default(false),
++});
++export type RuleFeedsRequest = z.infer<typeof ruleFeedsSchema>;
++export interface RuleFeedsResult {
++  /** Rules whose feeds or enabled state changed. */
++  updated: number;
++  /** Rules turned on by `enable`. */
++  enabled: number;
++}
++
+ export const markReadSchema = z.object({
+   feedId: z.string().optional(),
+   articles: z
+-- 
+2.43.0
+
+
+From fcacfe2298a46768c6d529d59793058510b32682 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 18:00:43 +0000
+Subject: [PATCH 3/3] Set feeds of selected rules in the rules panel
+
+Replaces the feed filter dropdown (hard to read in dark mode, and not
+what was asked) and the small feed icon/dialog with an editor that takes
+over the right-hand panel whenever rules are ticked. It lists every feed
+with its URL (so feeds with the same title can be told apart) and an
+on / off / mixed state for the selection, with "Use all" / "Use none",
+a sticky "Save feeds for N rules" bar, and Delete / Clear selection.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013nmSf2zmYoNEfzcNutPGUX
+---
+ README.md                                     |   2 +-
+ apps/web/src/components/RuleFeedsDialog.tsx   | 191 -------------
+ .../web/src/components/SelectedRulesPanel.tsx | 250 ++++++++++++++++++
+ apps/web/src/pages/Rss.tsx                    |  67 ++---
+ 4 files changed, 268 insertions(+), 242 deletions(-)
+ delete mode 100644 apps/web/src/components/RuleFeedsDialog.tsx
+ create mode 100644 apps/web/src/components/SelectedRulesPanel.tsx
+
+diff --git a/README.md b/README.md
+index 517f859..8a33feb 100644
+--- a/README.md
++++ b/README.md
+@@ -115,7 +115,7 @@ Everything is configurable in **Settings**. Every value can also be set by an en
+   - The episode filter takes `1x01-1x10;2x05;3x-` (open ranges also include later seasons).
+   - The smart filter never downloads the same episode twice. A REPACK/PROPER is allowed once.
+   - Saving a rule also applies it to articles already in your feeds.
+-  - **Feeds for many rules at once:** tick rules (Shift-click for a range, or filter by name or by feed and tick all), then use the feed button above the list. Tick a feed to add it to every selected rule, untick it to remove it; mixed boxes stay as they are. Disabled rules that get a feed can be turned on in the same step.
++  - **Feeds for many rules at once:** tick rules (Shift-click for a range, or search and tick the box at the top for all shown). The right-hand panel then lists every feed as on, off or mixed for the selection: click to add a feed to all of them or remove it, then *Save feeds*. Disabled rules can be turned on in the same step.
+   - Each rule can save to its own folder (*Save to*), e.g. `/downloads/Anime/<Show>/S01`. The checkbox in the rule list turns a rule on or off.
+   - **Coming from qBittorrent?** Export your rules there (RSS → Download Rules… → right-click the list → *Export rules…*). Then use the import button above the rule list. Feeds are matched by URL, and missing ones can be added for you. Rules that end up without a subscribed feed are imported disabled. By default only future articles are downloaded. qBittorrent's per-rule list of already-matched episodes isn't imported.
+ - **Missing episodes:** RSS only sees the latest items in a feed, so episodes released while DraxMax was off, or before you added a rule, never arrive that way. Every enabled rule with a *Save to* folder is checked regularly, every 6 h for shows active in the last 30 days and weekly for the rest:
+diff --git a/apps/web/src/components/RuleFeedsDialog.tsx b/apps/web/src/components/RuleFeedsDialog.tsx
+deleted file mode 100644
+index 50e582a..0000000
+--- a/apps/web/src/components/RuleFeedsDialog.tsx
++++ /dev/null
+@@ -1,191 +0,0 @@
+-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+-import { AlertTriangle, Loader2 } from 'lucide-react';
+-import { useState } from 'react';
+-import { toast } from 'sonner';
+-import type { RuleDTO } from '@draxmax/shared';
+-import { Button } from '@/components/ui/button';
+-import { Dialog, DialogContent } from '@/components/ui/dialog';
+-import { api } from '@/lib/api';
+-
+-type Change = 'add' | 'remove';
+-
+-/**
+- * Adds or removes feeds on several rules at once. Each feed's box shows whether all, none or
+- * some of the selected rules use it; a mixed box is left alone until it is clicked.
+- */
+-export function RuleFeedsDialog({
+-  rules,
+-  open,
+-  onClose,
+-}: {
+-  rules: RuleDTO[];
+-  open: boolean;
+-  onClose(): void;
+-}) {
+-  return (
+-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+-      <DialogContent
+-        title={rules.length === 1 ? 'Feeds for 1 rule' : `Feeds for ${rules.length} rules`}
+-        description="Tick a feed to add it to every selected rule, untick it to remove it."
+-      >
+-        {open && <Form key={rules.map((r) => r.id).join()} rules={rules} onClose={onClose} />}
+-      </DialogContent>
+-    </Dialog>
+-  );
+-}
+-
+-function Form({ rules, onClose }: { rules: RuleDTO[]; onClose(): void }) {
+-  const qc = useQueryClient();
+-  const { data: feeds = [] } = useQuery({ queryKey: ['rss', 'feeds'], queryFn: api.feeds });
+-  const [changes, setChanges] = useState<Map<string, Change>>(new Map());
+-  const [enable, setEnable] = useState(true);
+-  const [applyToExisting, setApplyToExisting] = useState(false);
+-
+-  const usedBy = (feedId: string) => rules.filter((r) => r.assignedFeedIds.includes(feedId)).length;
+-  /** What the box shows: on, off, or mixed (unchanged and only some rules use it). */
+-  const shown = (feedId: string): 'on' | 'off' | 'mixed' => {
+-    const c = changes.get(feedId);
+-    if (c) return c === 'add' ? 'on' : 'off';
+-    const n = usedBy(feedId);
+-    return n === rules.length ? 'on' : n === 0 ? 'off' : 'mixed';
+-  };
+-  function cycle(feedId: string) {
+-    const n = usedBy(feedId);
+-    const initial = n === rules.length ? 'on' : n === 0 ? 'off' : 'mixed';
+-    const now = shown(feedId);
+-    // mixed → on → off → mixed; plain boxes just toggle.
+-    const target =
+-      now === 'mixed' ? 'on' : now === 'on' ? 'off' : initial === 'mixed' ? 'mixed' : 'on';
+-    const next = new Map(changes);
+-    if (target === initial) next.delete(feedId);
+-    else next.set(feedId, target === 'on' ? 'add' : 'remove');
+-    setChanges(next);
+-  }
+-
+-  const add = [...changes].filter(([, c]) => c === 'add').map(([id]) => id);
+-  const remove = [...changes].filter(([, c]) => c === 'remove').map(([id]) => id);
+-  const after = (r: RuleDTO) =>
+-    [...new Set([...r.assignedFeedIds, ...add])].filter((id) => !remove.includes(id));
+-  const allFeedsNow = rules.filter((r) => r.assignedFeedIds.length === 0).length;
+-  const becomeAll = rules.filter((r) => r.assignedFeedIds.length > 0 && after(r).length === 0);
+-  const disabled = rules.filter((r) => !r.enabled);
+-  const wouldEnable = disabled.filter((r) => after(r).length > 0).length;
+-
+-  const save = useMutation({
+-    mutationFn: () =>
+-      api.setRuleFeeds({ ids: rules.map((r) => r.id), add, remove, enable, applyToExisting }),
+-    onSuccess: (res) => {
+-      toast.success(
+-        `${res.updated} ${res.updated === 1 ? 'rule' : 'rules'} updated` +
+-          (res.enabled ? `, ${res.enabled} turned on` : ''),
+-      );
+-      void qc.invalidateQueries({ queryKey: ['rss'] });
+-      onClose();
+-    },
+-    onError: (e) => toast.error(e.message),
+-  });
+-
+-  if (feeds.length === 0)
+-    return (
+-      <p className="py-6 text-center text-sm text-muted">
+-        No feeds yet. Add one on the Feeds tab first.
+-      </p>
+-    );
+-
+-  return (
+-    <form
+-      className="space-y-4"
+-      onSubmit={(e) => {
+-        e.preventDefault();
+-        save.mutate();
+-      }}
+-    >
+-      <ul className="max-h-72 space-y-0.5 overflow-y-auto rounded-xl bg-surface-2 p-1.5">
+-        {feeds.map((f) => {
+-          const state = shown(f.id);
+-          const n = usedBy(f.id);
+-          return (
+-            <li key={f.id}>
+-              <label className="flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 hover:bg-surface-hover">
+-                <input
+-                  type="checkbox"
+-                  checked={state === 'on'}
+-                  ref={(el) => {
+-                    if (el) el.indeterminate = state === 'mixed';
+-                  }}
+-                  onChange={() => cycle(f.id)}
+-                  className="size-4 shrink-0 accent-[var(--accent)]"
+-                />
+-                <span className="min-w-0 flex-1">
+-                  <span className="block truncate text-sm" title={f.url}>
+-                    {f.title}
+-                  </span>
+-                  <span className="block text-xs text-muted">
+-                    {changes.get(f.id) === 'add'
+-                      ? `Will be added to ${rules.length - n} ${rules.length - n === 1 ? 'rule' : 'rules'}`
+-                      : changes.get(f.id) === 'remove'
+-                        ? `Will be removed from ${n} ${n === 1 ? 'rule' : 'rules'}`
+-                        : `Used by ${n} of ${rules.length}`}
+-                  </span>
+-                </span>
+-              </label>
+-            </li>
+-          );
+-        })}
+-      </ul>
+-
+-      {allFeedsNow > 0 && add.length > 0 && (
+-        <p className="flex gap-2 text-xs text-muted">
+-          <AlertTriangle className="size-4 shrink-0 text-warning" />
+-          {allFeedsNow} selected {allFeedsNow === 1 ? 'rule applies' : 'rules apply'} to every feed
+-          now; after this {allFeedsNow === 1 ? 'it' : 'they'} only use the ticked feeds.
+-        </p>
+-      )}
+-      {becomeAll.length > 0 && (
+-        <p className="flex gap-2 text-xs text-muted">
+-          <AlertTriangle className="size-4 shrink-0 text-warning" />
+-          {becomeAll.length} {becomeAll.length === 1 ? 'rule is' : 'rules are'} left without feeds
+-          and will apply to every feed.
+-        </p>
+-      )}
+-
+-      <div className="space-y-2 text-sm">
+-        {disabled.length > 0 && (
+-          <label className="flex items-center gap-2">
+-            <input
+-              type="checkbox"
+-              checked={enable}
+-              onChange={(e) => setEnable(e.target.checked)}
+-              className="size-4 accent-[var(--accent)]"
+-            />
+-            Turn on disabled rules that get a feed
+-            {enable && wouldEnable > 0 && <span className="text-muted">({wouldEnable})</span>}
+-          </label>
+-        )}
+-        <label className="flex items-center gap-2">
+-          <input
+-            type="checkbox"
+-            checked={applyToExisting}
+-            onChange={(e) => setApplyToExisting(e.target.checked)}
+-            className="size-4 accent-[var(--accent)]"
+-          />
+-          Also download matching articles already in these feeds
+-        </label>
+-      </div>
+-
+-      <div className="flex justify-end gap-2">
+-        <Button variant="ghost" onClick={onClose}>
+-          Cancel
+-        </Button>
+-        <Button
+-          type="submit"
+-          variant="primary"
+-          disabled={save.isPending || (changes.size === 0 && !(enable && wouldEnable > 0))}
+-        >
+-          {save.isPending && <Loader2 className="animate-spin" />}
+-          Apply
+-        </Button>
+-      </div>
+-    </form>
+-  );
+-}
+diff --git a/apps/web/src/components/SelectedRulesPanel.tsx b/apps/web/src/components/SelectedRulesPanel.tsx
+new file mode 100644
+index 0000000..e9689a3
+--- /dev/null
++++ b/apps/web/src/components/SelectedRulesPanel.tsx
+@@ -0,0 +1,250 @@
++import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
++import { AlertTriangle, Check, Loader2, Minus, Rss, Trash2, X } from 'lucide-react';
++import { useState } from 'react';
++import { toast } from 'sonner';
++import type { FeedDTO, RuleDTO } from '@draxmax/shared';
++import { Button } from '@/components/ui/button';
++import { api } from '@/lib/api';
++import { cn } from '@/lib/utils';
++
++type State = 'on' | 'off' | 'mixed';
++
++function feedLabel(f: FeedDTO): string {
++  try {
++    const u = new URL(f.url);
++    return `${u.host}${u.pathname === '/' ? '' : u.pathname}${u.search.replace(/passkey=[^&]+/i, 'passkey=…')}`;
++  } catch {
++    return f.url;
++  }
++}
++
++/**
++ * Editor shown instead of the single-rule editor while rules are ticked: sets the feeds of
++ * every selected rule at once. A feed used by only some of them shows as mixed and stays that
++ * way unless clicked.
++ */
++export function SelectedRulesPanel({
++  rules,
++  onClear,
++  onDelete,
++}: {
++  rules: RuleDTO[];
++  onClear(): void;
++  onDelete(): void;
++}) {
++  const qc = useQueryClient();
++  const { data: feeds = [] } = useQuery({ queryKey: ['rss', 'feeds'], queryFn: api.feeds });
++  // Target state per feed; feeds not in the map are left as they are.
++  const [targets, setTargets] = useState<Map<string, 'on' | 'off'>>(new Map());
++  const [enable, setEnable] = useState(true);
++  const [applyToExisting, setApplyToExisting] = useState(false);
++
++  const usedBy = (feedId: string) => rules.filter((r) => r.assignedFeedIds.includes(feedId)).length;
++  const initial = (feedId: string): State => {
++    const n = usedBy(feedId);
++    return n === rules.length ? 'on' : n === 0 ? 'off' : 'mixed';
++  };
++  const shown = (feedId: string): State => targets.get(feedId) ?? initial(feedId);
++  function cycle(feedId: string) {
++    const now = shown(feedId);
++    // mixed → on → off → mixed; feeds all or none of the rules use simply toggle.
++    const target: State =
++      now === 'mixed' ? 'on' : now === 'on' ? 'off' : initial(feedId) === 'mixed' ? 'mixed' : 'on';
++    const next = new Map(targets);
++    if (target === initial(feedId) || target === 'mixed') next.delete(feedId);
++    else next.set(feedId, target);
++    setTargets(next);
++  }
++  const setAll = (state: 'on' | 'off') =>
++    setTargets(
++      new Map(feeds.filter((f) => initial(f.id) !== state).map((f) => [f.id, state] as const)),
++    );
++
++  const add = [...targets].filter(([, t]) => t === 'on').map(([id]) => id);
++  const remove = [...targets].filter(([, t]) => t === 'off').map(([id]) => id);
++  const after = (r: RuleDTO) =>
++    [...new Set([...r.assignedFeedIds, ...add])].filter((id) => !remove.includes(id));
++  const allFeedsNow = rules.filter((r) => r.assignedFeedIds.length === 0).length;
++  const becomeAll = rules.filter((r) => r.assignedFeedIds.length > 0 && after(r).length === 0);
++  const disabled = rules.filter((r) => !r.enabled);
++  const wouldEnable = enable ? disabled.filter((r) => after(r).length > 0).length : 0;
++  const dirty = targets.size > 0 || wouldEnable > 0;
++
++  const save = useMutation({
++    mutationFn: () =>
++      api.setRuleFeeds({ ids: rules.map((r) => r.id), add, remove, enable, applyToExisting }),
++    onSuccess: (res) => {
++      toast.success(
++        `Feeds updated on ${res.updated} ${res.updated === 1 ? 'rule' : 'rules'}` +
++          (res.enabled ? `, ${res.enabled} turned on` : ''),
++      );
++      setTargets(new Map());
++    },
++    onError: (e) => toast.error(e.message),
++    onSettled: () => void qc.invalidateQueries({ queryKey: ['rss'] }),
++  });
++
++  return (
++    <form
++      className="mx-auto max-w-2xl space-y-5"
++      onSubmit={(e) => {
++        e.preventDefault();
++        save.mutate();
++      }}
++    >
++      <header className="flex flex-wrap items-start justify-between gap-3">
++        <div>
++          <h2 className="text-lg font-semibold">
++            {rules.length === 1 ? '1 rule selected' : `${rules.length} rules selected`}
++          </h2>
++          <p className="mt-0.5 text-sm text-muted">
++            Choose the feeds these rules use. Changes apply to every selected rule.
++          </p>
++        </div>
++        <div className="flex gap-2">
++          <Button size="sm" variant="ghost" className="text-danger" onClick={onDelete}>
++            <Trash2 /> Delete
++          </Button>
++          <Button size="sm" onClick={onClear}>
++            <X /> Clear selection
++          </Button>
++        </div>
++      </header>
++
++      <section className="space-y-2">
++        <div className="flex items-center justify-between">
++          <h3 className="flex items-center gap-2 text-sm font-medium">
++            <Rss className="size-4 text-muted" /> Feeds
++          </h3>
++          {feeds.length > 1 && (
++            <div className="flex gap-1">
++              <Button size="sm" variant="ghost" onClick={() => setAll('on')}>
++                Use all
++              </Button>
++              <Button size="sm" variant="ghost" onClick={() => setAll('off')}>
++                Use none
++              </Button>
++            </div>
++          )}
++        </div>
++        {feeds.length === 0 ? (
++          <p className="rounded-xl border p-6 text-center text-sm text-muted">
++            No feeds yet. Add one on the Feeds tab first.
++          </p>
++        ) : (
++          <ul className="divide-y divide-border/60 overflow-hidden rounded-xl border">
++            {feeds.map((f) => {
++              const state = shown(f.id);
++              const n = usedBy(f.id);
++              const target = targets.get(f.id);
++              return (
++                <li key={f.id}>
++                  <button
++                    type="button"
++                    role="checkbox"
++                    aria-checked={state === 'mixed' ? 'mixed' : state === 'on'}
++                    onClick={() => cycle(f.id)}
++                    className={cn(
++                      'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-surface-hover',
++                      target && 'bg-accent/10',
++                    )}
++                  >
++                    <span
++                      className={cn(
++                        'flex size-5 shrink-0 items-center justify-center rounded-md border-2',
++                        state === 'on' && 'border-accent bg-accent text-accent-fg',
++                        state === 'mixed' && 'border-accent text-accent',
++                        state === 'off' && 'border-muted/60',
++                      )}
++                    >
++                      {state === 'on' && <Check className="size-3.5" strokeWidth={3} />}
++                      {state === 'mixed' && <Minus className="size-3.5" strokeWidth={3} />}
++                    </span>
++                    <span className="min-w-0 flex-1">
++                      <span className="block truncate text-sm font-medium text-fg">{f.title}</span>
++                      <span className="block truncate font-mono text-[11px] text-muted">
++                        {feedLabel(f)}
++                      </span>
++                    </span>
++                    <span
++                      className={cn(
++                        'shrink-0 text-xs',
++                        target === 'on'
++                          ? 'text-success'
++                          : target === 'off'
++                            ? 'text-danger'
++                            : 'text-muted',
++                      )}
++                    >
++                      {target === 'on'
++                        ? `+ ${rules.length - n} ${rules.length - n === 1 ? 'rule' : 'rules'}`
++                        : target === 'off'
++                          ? `− ${n} ${n === 1 ? 'rule' : 'rules'}`
++                          : n === rules.length
++                            ? 'All'
++                            : n === 0
++                              ? 'None'
++                              : `${n} of ${rules.length}`}
++                    </span>
++                  </button>
++                </li>
++              );
++            })}
++          </ul>
++        )}
++      </section>
++
++      {allFeedsNow > 0 && add.length > 0 && (
++        <p className="flex gap-2 text-xs text-muted">
++          <AlertTriangle className="size-4 shrink-0 text-warning" />
++          {allFeedsNow} of these {allFeedsNow === 1 ? 'rule has' : 'rules have'} no feed and apply
++          to every feed; after this {allFeedsNow === 1 ? 'it uses' : 'they use'} only the ticked
++          ones.
++        </p>
++      )}
++      {becomeAll.length > 0 && (
++        <p className="flex gap-2 text-xs text-muted">
++          <AlertTriangle className="size-4 shrink-0 text-warning" />
++          {becomeAll.length} {becomeAll.length === 1 ? 'rule is' : 'rules are'} left without a feed
++          and will apply to every feed.
++        </p>
++      )}
++
++      <div className="space-y-2 text-sm">
++        {disabled.length > 0 && (
++          <label className="flex items-center gap-2">
++            <input
++              type="checkbox"
++              checked={enable}
++              onChange={(e) => setEnable(e.target.checked)}
++              className="size-4 accent-[var(--accent)]"
++            />
++            Turn on the {disabled.length} disabled {disabled.length === 1 ? 'rule' : 'rules'} once
++            they have a feed
++          </label>
++        )}
++        <label className="flex items-center gap-2">
++          <input
++            type="checkbox"
++            checked={applyToExisting}
++            onChange={(e) => setApplyToExisting(e.target.checked)}
++            className="size-4 accent-[var(--accent)]"
++          />
++          Also download matching articles already in these feeds
++        </label>
++      </div>
++
++      <div className="sticky -bottom-5 -mx-5 -mb-5 flex items-center justify-end gap-2 border-t bg-surface-2/95 px-5 py-3 backdrop-blur">
++        {targets.size > 0 && (
++          <Button variant="ghost" onClick={() => setTargets(new Map())}>
++            Reset
++          </Button>
++        )}
++        <Button type="submit" variant="primary" disabled={save.isPending || !dirty}>
++          {save.isPending && <Loader2 className="animate-spin" />}
++          Save feeds for {rules.length} {rules.length === 1 ? 'rule' : 'rules'}
++        </Button>
++      </div>
++    </form>
++  );
++}
+diff --git a/apps/web/src/pages/Rss.tsx b/apps/web/src/pages/Rss.tsx
+index 8b19fb5..14070dd 100644
+--- a/apps/web/src/pages/Rss.tsx
++++ b/apps/web/src/pages/Rss.tsx
+@@ -20,7 +20,7 @@ import { toast } from 'sonner';
+ import type { ArticleDTO, FeedDTO, RuleDTO, RuleImportResult, RuleInput } from '@draxmax/shared';
+ import { PathInput } from '@/components/FolderPicker';
+ import { MissingTab } from '@/components/MissingEpisodes';
+-import { RuleFeedsDialog } from '@/components/RuleFeedsDialog';
++import { SelectedRulesPanel } from '@/components/SelectedRulesPanel';
+ import { Badge } from '@/components/ui/badge';
+ import { Button } from '@/components/ui/button';
+ import { Dialog, DialogContent } from '@/components/ui/dialog';
+@@ -33,7 +33,6 @@ import { formatBytes } from '@/lib/format';
+ import { cn } from '@/lib/utils';
+ 
+ const ALL = '__all';
+-const NO_FEEDS = '__none';
+ 
+ function timeAgo(iso: string | null): string {
+   if (!iso) return 'never';
+@@ -572,23 +571,14 @@ function RulesTab() {
+   const [anchor, setAnchor] = useState<string | null>(null);
+   const [confirmDelete, setConfirmDelete] = useState(false);
+   const [ruleQuery, setRuleQuery] = useState('');
+-  const [editFeeds, setEditFeeds] = useState(false);
+-  const { data: feeds = [] } = useQuery({ queryKey: ['rss', 'feeds'], queryFn: api.feeds });
+-  // '' = any feed, NO_FEEDS = rules without feeds (they apply to every feed), else a feed id.
+-  const [feedFilter, setFeedFilter] = useState('');
+   // Every word must appear in the name or a "must contain" line.
+   const words = ruleQuery.toLowerCase().split(/\s+/).filter(Boolean);
+-  const filtering = words.length > 0 || feedFilter !== '';
+-  const visible = rules.filter((r) => {
+-    if (
+-      feedFilter === NO_FEEDS
+-        ? r.assignedFeedIds.length > 0
+-        : feedFilter && !r.assignedFeedIds.includes(feedFilter)
+-    )
+-      return false;
+-    const text = `${r.name}\n${r.mustContain.join('\n')}`.toLowerCase();
+-    return words.every((w) => text.includes(w));
+-  });
++  const visible = words.length
++    ? rules.filter((r) => {
++        const text = `${r.name}\n${r.mustContain.join('\n')}`.toLowerCase();
++        return words.every((w) => text.includes(w));
++      })
++    : rules;
+   // Bulk actions only apply to rules that are shown.
+   const checked = visible.filter((r) => checkedIds.has(r.id));
+   const allChecked = visible.length > 0 && checked.length === visible.length;
+@@ -665,24 +655,12 @@ function RulesTab() {
+               : `Rules${
+                   rules.length === 0
+                     ? ''
+-                    : filtering
++                    : words.length
+                       ? ` (${visible.length} of ${rules.length})`
+                       : ` (${rules.length})`
+                 }`}
+           </span>
+           <span className="flex-1" />
+-          {checked.length > 0 && (
+-            <Tooltip content="Add or remove feeds on the selected rules">
+-              <Button
+-                size="icon-sm"
+-                variant="ghost"
+-                aria-label={`Feeds for ${checked.length} selected rules`}
+-                onClick={() => setEditFeeds(true)}
+-              >
+-                <Rss />
+-              </Button>
+-            </Tooltip>
+-          )}
+           {checked.length > 0 && (
+             <Tooltip content="Delete selected rules (Del)">
+               <Button
+@@ -740,22 +718,6 @@ function RulesTab() {
+               aria-label="Search rules"
+               className="h-9 pl-9"
+             />
+-            {feeds.length > 0 && (
+-              <select
+-                aria-label="Filter rules by feed"
+-                value={feedFilter}
+-                onChange={(e) => setFeedFilter(e.target.value)}
+-                className="mt-1.5 h-8 w-full rounded-xl border bg-surface-2 px-2.5 text-xs text-muted"
+-              >
+-                <option value="">Any feed</option>
+-                <option value={NO_FEEDS}>No feed (applies to all feeds)</option>
+-                {feeds.map((f) => (
+-                  <option key={f.id} value={f.id}>
+-                    Uses {f.title}
+-                  </option>
+-                ))}
+-              </select>
+-            )}
+           </div>
+         )}
+         <ul
+@@ -813,12 +775,12 @@ function RulesTab() {
+             </li>
+           ))}
+         </ul>
+-        {filtering && visible.length === 0 && (
++        {words.length > 0 && visible.length === 0 && (
+           <p className="px-3 py-6 text-center text-sm text-muted">No rules match.</p>
+         )}
+         {rules.length > 1 && checked.length === 0 && (
+           <p className="hidden px-3 pt-2 text-xs text-muted lg:block">
+-            Tick rules, or Ctrl/Shift-click them, to change their feeds or delete several at once.
++            Tick rules, or Ctrl/Shift-click them, to set their feeds or delete several at once.
+           </p>
+         )}
+         {rules.length === 0 && selected !== 'new' && (
+@@ -832,7 +794,13 @@ function RulesTab() {
+         )}
+       </aside>
+       <section className="glass min-h-0 overflow-y-auto rounded-2xl p-5">
+-        {selected ? (
++        {checked.length > 0 ? (
++          <SelectedRulesPanel
++            rules={checked}
++            onClear={() => setCheckedIds(new Set())}
++            onDelete={() => setConfirmDelete(true)}
++          />
++        ) : selected ? (
+           <RuleEditor
+             key={selected}
+             rule={current}
+@@ -844,7 +812,6 @@ function RulesTab() {
+         )}
+       </section>
+       <ImportRulesDialog rules={importing} onClose={() => setImporting(null)} />
+-      <RuleFeedsDialog rules={checked} open={editFeeds} onClose={() => setEditFeeds(false)} />
+       <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+         <DialogContent
+           title={checked.length === 1 ? 'Delete rule?' : `Delete ${checked.length} rules?`}
+-- 
+2.43.0
+

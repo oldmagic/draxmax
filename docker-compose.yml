@@ -1,0 +1,54 @@
+# DraxMax — `docker compose up -d`, then open http://localhost:8895
+services:
+  draxmax:
+    build: .
+    image: ghcr.io/draxmax/draxmax:latest
+    container_name: draxmax
+    # Host networking gives the best DHT / peer connectivity (Linux only).
+    # On macOS/Windows Docker Desktop, comment this out and use the `ports` block instead.
+    network_mode: host
+    # ports:
+    #   - "8895:8895"       # Web UI
+    #   - "6881:6881"       # BitTorrent TCP
+    #   - "6881:6881/udp"   # BitTorrent uTP
+    #   - "6882:6882/udp"   # DHT (TORRENT_PORT + 1 unless DHT_PORT is set)
+    environment:
+      - TZ=${TZ:-UTC}
+      # Files are written as this user/group (match your host user: `id -u` / `id -g`).
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - PORT=${PORT:-8895}
+      - TORRENT_PORT=${TORRENT_PORT:-6881}
+      # Optional Web UI login (otherwise the first remote visit asks you to create one).
+      - WEBUI_USERNAME=${WEBUI_USERNAME:-}
+      - WEBUI_PASSWORD=${WEBUI_PASSWORD:-}
+      # Optional: free key from https://www.themoviedb.org/settings/api (enables movies/TV in Upcoming).
+      - TMDB_API_KEY=${TMDB_API_KEY:-}
+      # Optional API token for scripts (`Authorization: Bearer <token>`).
+      - API_TOKEN=${API_TOKEN:-}
+    volumes:
+      - ./data/config:/config
+      - ./data/downloads:/downloads
+      - ./data/watch:/watch
+      # Drives mounted under /media on the host, at the same path in DraxMax (Add → Save to →
+      # Browse). `rslave` makes drives mounted there later show up without a restart.
+      - /media:/media:rslave
+      # Other save folders, e.g. a NAS share mounted on the host:
+      # - /mnt/nas/media:/nas
+      # Lets Settings → "Run as" accept host user/group names (Linux only; read-only).
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+    # Hardening: the entrypoint only needs these capabilities to apply PUID/PGID before it
+    # drops to the unprivileged user (which then has none at all).
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE, SETUID, SETGID]
+    # Resource caps; raise mem_limit if you run hundreds of active torrents.
+    mem_limit: 1g
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: '3' }
+    restart: unless-stopped
+    stop_grace_period: 15s

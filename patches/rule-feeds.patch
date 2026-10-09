@@ -1,0 +1,568 @@
+From ba32058771edebe18f01505c29fb0bc85811a631 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 8 Oct 2026 17:18:14 +0000
+Subject: [PATCH] Assign feeds to many download rules at once
+
+Selecting rules now offers a feed button that opens a dialog with one
+tri-state checkbox per feed (all / none / some of the selected rules use
+it). Ticking adds the feed to every selected rule, unticking removes it,
+mixed boxes are left alone. Disabled rules that get a feed (e.g. imported
+from qBittorrent without a subscribed feed) can be turned on in the same
+step, and applying to existing articles is opt-in.
+
+- POST /api/rss/rules/feeds updates all rules in one request
+- Rules list can be filtered by feed, or by "no feed" (applies to all)
+- Warns when rules that used every feed get limited, or end up with none
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013nmSf2zmYoNEfzcNutPGUX
+---
+ README.md                                   |   1 +
+ apps/server/src/routes/rss.ts               |   4 +
+ apps/web/src/components/RuleFeedsDialog.tsx | 191 ++++++++++++++++++++
+ apps/web/src/lib/api.ts                     |   4 +
+ apps/web/src/pages/Rss.tsx                  |  58 +++++-
+ packages/core/src/rss/rss-service.test.ts   |  68 +++++++
+ packages/core/src/rss/rss-service.ts        |  36 ++++
+ packages/shared/src/api.ts                  |  18 ++
+ 8 files changed, 371 insertions(+), 9 deletions(-)
+ create mode 100644 apps/web/src/components/RuleFeedsDialog.tsx
+
+diff --git a/README.md b/README.md
+index e0aa905..517f859 100644
+--- a/README.md
++++ b/README.md
+@@ -115,6 +115,7 @@ Everything is configurable in **Settings**. Every value can also be set by an en
+   - The episode filter takes `1x01-1x10;2x05;3x-` (open ranges also include later seasons).
+   - The smart filter never downloads the same episode twice. A REPACK/PROPER is allowed once.
+   - Saving a rule also applies it to articles already in your feeds.
++  - **Feeds for many rules at once:** tick rules (Shift-click for a range, or filter by name or by feed and tick all), then use the feed button above the list. Tick a feed to add it to every selected rule, untick it to remove it; mixed boxes stay as they are. Disabled rules that get a feed can be turned on in the same step.
+   - Each rule can save to its own folder (*Save to*), e.g. `/downloads/Anime/<Show>/S01`. The checkbox in the rule list turns a rule on or off.
+   - **Coming from qBittorrent?** Export your rules there (RSS → Download Rules… → right-click the list → *Export rules…*). Then use the import button above the rule list. Feeds are matched by URL, and missing ones can be added for you. Rules that end up without a subscribed feed are imported disabled. By default only future articles are downloaded. qBittorrent's per-rule list of already-matched episodes isn't imported.
+ - **Missing episodes:** RSS only sees the latest items in a feed, so episodes released while DraxMax was off, or before you added a rule, never arrive that way. Every enabled rule with a *Save to* folder is checked regularly, every 6 h for shows active in the last 30 days and weekly for the rest:
+diff --git a/apps/server/src/routes/rss.ts b/apps/server/src/routes/rss.ts
+index 68f9431..90c274c 100644
+--- a/apps/server/src/routes/rss.ts
++++ b/apps/server/src/routes/rss.ts
+@@ -7,6 +7,7 @@ import {
+   feedPatchSchema,
+   markReadSchema,
+   qbRuleImportSchema,
++  ruleFeedsSchema,
+   ruleIdsSchema,
+   ruleSchema,
+ } from '@draxmax/shared';
+@@ -84,6 +85,9 @@ export async function rssRoutes(app: FastifyInstance, { core }: { core: Core }):
+   app.post('/api/rss/rules/delete', async (req) => ({
+     deleted: rss.deleteRules(ruleIdsSchema.parse(req.body).ids),
+   }));
++  app.post('/api/rss/rules/feeds', async (req) =>
++    rss.setRuleFeeds(ruleFeedsSchema.parse(req.body)),
++  );
+   app.post('/api/rss/rules/import', async (req) => {
+     const { rules, ...opts } = qbRuleImportSchema.parse(req.body);
+     return rss.importQbRules(rules, opts);
+diff --git a/apps/web/src/components/RuleFeedsDialog.tsx b/apps/web/src/components/RuleFeedsDialog.tsx
+new file mode 100644
+index 0000000..50e582a
+--- /dev/null
++++ b/apps/web/src/components/RuleFeedsDialog.tsx
+@@ -0,0 +1,191 @@
++import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
++import { AlertTriangle, Loader2 } from 'lucide-react';
++import { useState } from 'react';
++import { toast } from 'sonner';
++import type { RuleDTO } from '@draxmax/shared';
++import { Button } from '@/components/ui/button';
++import { Dialog, DialogContent } from '@/components/ui/dialog';
++import { api } from '@/lib/api';
++
++type Change = 'add' | 'remove';
++
++/**
++ * Adds or removes feeds on several rules at once. Each feed's box shows whether all, none or
++ * some of the selected rules use it; a mixed box is left alone until it is clicked.
++ */
++export function RuleFeedsDialog({
++  rules,
++  open,
++  onClose,
++}: {
++  rules: RuleDTO[];
++  open: boolean;
++  onClose(): void;
++}) {
++  return (
++    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
++      <DialogContent
++        title={rules.length === 1 ? 'Feeds for 1 rule' : `Feeds for ${rules.length} rules`}
++        description="Tick a feed to add it to every selected rule, untick it to remove it."
++      >
++        {open && <Form key={rules.map((r) => r.id).join()} rules={rules} onClose={onClose} />}
++      </DialogContent>
++    </Dialog>
++  );
++}
++
++function Form({ rules, onClose }: { rules: RuleDTO[]; onClose(): void }) {
++  const qc = useQueryClient();
++  const { data: feeds = [] } = useQuery({ queryKey: ['rss', 'feeds'], queryFn: api.feeds });
++  const [changes, setChanges] = useState<Map<string, Change>>(new Map());
++  const [enable, setEnable] = useState(true);
++  const [applyToExisting, setApplyToExisting] = useState(false);
++
++  const usedBy = (feedId: string) => rules.filter((r) => r.assignedFeedIds.includes(feedId)).length;
++  /** What the box shows: on, off, or mixed (unchanged and only some rules use it). */
++  const shown = (feedId: string): 'on' | 'off' | 'mixed' => {
++    const c = changes.get(feedId);
++    if (c) return c === 'add' ? 'on' : 'off';
++    const n = usedBy(feedId);
++    return n === rules.length ? 'on' : n === 0 ? 'off' : 'mixed';
++  };
++  function cycle(feedId: string) {
++    const n = usedBy(feedId);
++    const initial = n === rules.length ? 'on' : n === 0 ? 'off' : 'mixed';
++    const now = shown(feedId);
++    // mixed → on → off → mixed; plain boxes just toggle.
++    const target =
++      now === 'mixed' ? 'on' : now === 'on' ? 'off' : initial === 'mixed' ? 'mixed' : 'on';
++    const next = new Map(changes);
++    if (target === initial) next.delete(feedId);
++    else next.set(feedId, target === 'on' ? 'add' : 'remove');
++    setChanges(next);
++  }
++
++  const add = [...changes].filter(([, c]) => c === 'add').map(([id]) => id);
++  const remove = [...changes].filter(([, c]) => c === 'remove').map(([id]) => id);
++  const after = (r: RuleDTO) =>
++    [...new Set([...r.assignedFeedIds, ...add])].filter((id) => !remove.includes(id));
++  const allFeedsNow = rules.filter((r) => r.assignedFeedIds.length === 0).length;
++  const becomeAll = rules.filter((r) => r.assignedFeedIds.length > 0 && after(r).length === 0);
++  const disabled = rules.filter((r) => !r.enabled);
++  const wouldEnable = disabled.filter((r) => after(r).length > 0).length;
++
++  const save = useMutation({
++    mutationFn: () =>
++      api.setRuleFeeds({ ids: rules.map((r) => r.id), add, remove, enable, applyToExisting }),
++    onSuccess: (res) => {
++      toast.success(
++        `${res.updated} ${res.updated === 1 ? 'rule' : 'rules'} updated` +
++          (res.enabled ? `, ${res.enabled} turned on` : ''),
++      );
++      void qc.invalidateQueries({ queryKey: ['rss'] });
++      onClose();
++    },
++    onError: (e) => toast.error(e.message),
++  });
++
++  if (feeds.length === 0)
++    return (
++      <p className="py-6 text-center text-sm text-muted">
++        No feeds yet. Add one on the Feeds tab first.
++      </p>
++    );
++
++  return (
++    <form
++      className="space-y-4"
++      onSubmit={(e) => {
++        e.preventDefault();
++        save.mutate();
++      }}
++    >
++      <ul className="max-h-72 space-y-0.5 overflow-y-auto rounded-xl bg-surface-2 p-1.5">
++        {feeds.map((f) => {
++          const state = shown(f.id);
++          const n = usedBy(f.id);
++          return (
++            <li key={f.id}>
++              <label className="flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 hover:bg-surface-hover">
++                <input
++                  type="checkbox"
++                  checked={state === 'on'}
++                  ref={(el) => {
++                    if (el) el.indeterminate = state === 'mixed';
++                  }}
++                  onChange={() => cycle(f.id)}
++                  className="size-4 shrink-0 accent-[var(--accent)]"
++                />
++                <span className="min-w-0 flex-1">
++                  <span className="block truncate text-sm" title={f.url}>
++                    {f.title}
++                  </span>
++                  <span className="block text-xs text-muted">
++                    {changes.get(f.id) === 'add'
++                      ? `Will be added to ${rules.length - n} ${rules.length - n === 1 ? 'rule' : 'rules'}`
++                      : changes.get(f.id) === 'remove'
++                        ? `Will be removed from ${n} ${n === 1 ? 'rule' : 'rules'}`
++                        : `Used by ${n} of ${rules.length}`}
++                  </span>
++                </span>
++              </label>
++            </li>
++          );
++        })}
++      </ul>
++
++      {allFeedsNow > 0 && add.length > 0 && (
++        <p className="flex gap-2 text-xs text-muted">
++          <AlertTriangle className="size-4 shrink-0 text-warning" />
++          {allFeedsNow} selected {allFeedsNow === 1 ? 'rule applies' : 'rules apply'} to every feed
++          now; after this {allFeedsNow === 1 ? 'it' : 'they'} only use the ticked feeds.
++        </p>
++      )}
++      {becomeAll.length > 0 && (
++        <p className="flex gap-2 text-xs text-muted">
++          <AlertTriangle className="size-4 shrink-0 text-warning" />
++          {becomeAll.length} {becomeAll.length === 1 ? 'rule is' : 'rules are'} left without feeds
++          and will apply to every feed.
++        </p>
++      )}
++
++      <div className="space-y-2 text-sm">
++        {disabled.length > 0 && (
++          <label className="flex items-center gap-2">
++            <input
++              type="checkbox"
++              checked={enable}
++              onChange={(e) => setEnable(e.target.checked)}
++              className="size-4 accent-[var(--accent)]"
++            />
++            Turn on disabled rules that get a feed
++            {enable && wouldEnable > 0 && <span className="text-muted">({wouldEnable})</span>}
++          </label>
++        )}
++        <label className="flex items-center gap-2">
++          <input
++            type="checkbox"
++            checked={applyToExisting}
++            onChange={(e) => setApplyToExisting(e.target.checked)}
++            className="size-4 accent-[var(--accent)]"
++          />
++          Also download matching articles already in these feeds
++        </label>
++      </div>
++
++      <div className="flex justify-end gap-2">
++        <Button variant="ghost" onClick={onClose}>
++          Cancel
++        </Button>
++        <Button
++          type="submit"
++          variant="primary"
++          disabled={save.isPending || (changes.size === 0 && !(enable && wouldEnable > 0))}
++        >
++          {save.isPending && <Loader2 className="animate-spin" />}
++          Apply
++        </Button>
++      </div>
++    </form>
++  );
++}
+diff --git a/apps/web/src/lib/api.ts b/apps/web/src/lib/api.ts
+index f425079..608186b 100644
+--- a/apps/web/src/lib/api.ts
++++ b/apps/web/src/lib/api.ts
+@@ -3,6 +3,8 @@ import type {
+   DirListing,
+   QbRuleImportRequest,
+   RuleImportResult,
++  RuleFeedsRequest,
++  RuleFeedsResult,
+   FeedDTO,
+   RssHistoryDTO,
+   RuleDTO,
+@@ -182,6 +184,8 @@ export const api = {
+     request<{ deleted: number }>('POST', '/api/rss/rules/delete', { ids }),
+   importQbRules: (body: QbRuleImportRequest) =>
+     request<RuleImportResult>('POST', '/api/rss/rules/import', body),
++  setRuleFeeds: (body: Partial<RuleFeedsRequest> & { ids: string[] }) =>
++    request<RuleFeedsResult>('POST', '/api/rss/rules/feeds', body),
+   previewRule: (r: RuleInput) => request<ArticleDTO[]>('POST', '/api/rss/rules/preview', r),
+   missing: () => request<MissingResponse>('GET', '/api/missing'),
+   checkMissing: (ruleIds?: string[]) =>
+diff --git a/apps/web/src/pages/Rss.tsx b/apps/web/src/pages/Rss.tsx
+index 816a9a3..8b19fb5 100644
+--- a/apps/web/src/pages/Rss.tsx
++++ b/apps/web/src/pages/Rss.tsx
+@@ -20,6 +20,7 @@ import { toast } from 'sonner';
+ import type { ArticleDTO, FeedDTO, RuleDTO, RuleImportResult, RuleInput } from '@draxmax/shared';
+ import { PathInput } from '@/components/FolderPicker';
+ import { MissingTab } from '@/components/MissingEpisodes';
++import { RuleFeedsDialog } from '@/components/RuleFeedsDialog';
+ import { Badge } from '@/components/ui/badge';
+ import { Button } from '@/components/ui/button';
+ import { Dialog, DialogContent } from '@/components/ui/dialog';
+@@ -32,6 +33,7 @@ import { formatBytes } from '@/lib/format';
+ import { cn } from '@/lib/utils';
+ 
+ const ALL = '__all';
++const NO_FEEDS = '__none';
+ 
+ function timeAgo(iso: string | null): string {
+   if (!iso) return 'never';
+@@ -570,14 +572,23 @@ function RulesTab() {
+   const [anchor, setAnchor] = useState<string | null>(null);
+   const [confirmDelete, setConfirmDelete] = useState(false);
+   const [ruleQuery, setRuleQuery] = useState('');
++  const [editFeeds, setEditFeeds] = useState(false);
++  const { data: feeds = [] } = useQuery({ queryKey: ['rss', 'feeds'], queryFn: api.feeds });
++  // '' = any feed, NO_FEEDS = rules without feeds (they apply to every feed), else a feed id.
++  const [feedFilter, setFeedFilter] = useState('');
+   // Every word must appear in the name or a "must contain" line.
+   const words = ruleQuery.toLowerCase().split(/\s+/).filter(Boolean);
+-  const visible = words.length
+-    ? rules.filter((r) => {
+-        const text = `${r.name}\n${r.mustContain.join('\n')}`.toLowerCase();
+-        return words.every((w) => text.includes(w));
+-      })
+-    : rules;
++  const filtering = words.length > 0 || feedFilter !== '';
++  const visible = rules.filter((r) => {
++    if (
++      feedFilter === NO_FEEDS
++        ? r.assignedFeedIds.length > 0
++        : feedFilter && !r.assignedFeedIds.includes(feedFilter)
++    )
++      return false;
++    const text = `${r.name}\n${r.mustContain.join('\n')}`.toLowerCase();
++    return words.every((w) => text.includes(w));
++  });
+   // Bulk actions only apply to rules that are shown.
+   const checked = visible.filter((r) => checkedIds.has(r.id));
+   const allChecked = visible.length > 0 && checked.length === visible.length;
+@@ -654,12 +665,24 @@ function RulesTab() {
+               : `Rules${
+                   rules.length === 0
+                     ? ''
+-                    : words.length
++                    : filtering
+                       ? ` (${visible.length} of ${rules.length})`
+                       : ` (${rules.length})`
+                 }`}
+           </span>
+           <span className="flex-1" />
++          {checked.length > 0 && (
++            <Tooltip content="Add or remove feeds on the selected rules">
++              <Button
++                size="icon-sm"
++                variant="ghost"
++                aria-label={`Feeds for ${checked.length} selected rules`}
++                onClick={() => setEditFeeds(true)}
++              >
++                <Rss />
++              </Button>
++            </Tooltip>
++          )}
+           {checked.length > 0 && (
+             <Tooltip content="Delete selected rules (Del)">
+               <Button
+@@ -717,6 +740,22 @@ function RulesTab() {
+               aria-label="Search rules"
+               className="h-9 pl-9"
+             />
++            {feeds.length > 0 && (
++              <select
++                aria-label="Filter rules by feed"
++                value={feedFilter}
++                onChange={(e) => setFeedFilter(e.target.value)}
++                className="mt-1.5 h-8 w-full rounded-xl border bg-surface-2 px-2.5 text-xs text-muted"
++              >
++                <option value="">Any feed</option>
++                <option value={NO_FEEDS}>No feed (applies to all feeds)</option>
++                {feeds.map((f) => (
++                  <option key={f.id} value={f.id}>
++                    Uses {f.title}
++                  </option>
++                ))}
++              </select>
++            )}
+           </div>
+         )}
+         <ul
+@@ -774,12 +813,12 @@ function RulesTab() {
+             </li>
+           ))}
+         </ul>
+-        {words.length > 0 && visible.length === 0 && (
++        {filtering && visible.length === 0 && (
+           <p className="px-3 py-6 text-center text-sm text-muted">No rules match.</p>
+         )}
+         {rules.length > 1 && checked.length === 0 && (
+           <p className="hidden px-3 pt-2 text-xs text-muted lg:block">
+-            Tick rules, or Ctrl/Shift-click them, to delete several at once.
++            Tick rules, or Ctrl/Shift-click them, to change their feeds or delete several at once.
+           </p>
+         )}
+         {rules.length === 0 && selected !== 'new' && (
+@@ -805,6 +844,7 @@ function RulesTab() {
+         )}
+       </section>
+       <ImportRulesDialog rules={importing} onClose={() => setImporting(null)} />
++      <RuleFeedsDialog rules={checked} open={editFeeds} onClose={() => setEditFeeds(false)} />
+       <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+         <DialogContent
+           title={checked.length === 1 ? 'Delete rule?' : `Delete ${checked.length} rules?`}
+diff --git a/packages/core/src/rss/rss-service.test.ts b/packages/core/src/rss/rss-service.test.ts
+index 12c4103..3e303f0 100644
+--- a/packages/core/src/rss/rss-service.test.ts
++++ b/packages/core/src/rss/rss-service.test.ts
+@@ -228,4 +228,72 @@ describe('RssService', () => {
+     expect(core.rss.deleteRules([...ids, ids[0]!, 'missing'])).toBe(2);
+     expect(core.rss.rules()).toEqual([]);
+   });
++
++  it('adds and removes feeds on several rules, turning on disabled ones that get a feed', async () => {
++    xml = feedXml([]);
++    const a = await core.rss.addFeed('https://feeds.example/a');
++    const b = await core.rss.addFeed('https://feeds.example/b');
++    const base = {
++      priority: 0,
++      mustContain: [],
++      mustNotContain: [],
++      useRegex: false,
++      smartEpisodeFilter: false,
++      tags: [],
++      addPaused: false,
++    };
++    const one = await core.rss.saveRule({
++      ...base,
++      name: 'One',
++      enabled: false,
++      assignedFeedIds: [],
++    });
++    const two = await core.rss.saveRule({
++      ...base,
++      name: 'Two',
++      enabled: true,
++      assignedFeedIds: [a.id],
++    });
++    const untouched = await core.rss.saveRule({
++      ...base,
++      name: 'Three',
++      enabled: false,
++      assignedFeedIds: [],
++    });
++
++    expect(
++      await core.rss.setRuleFeeds({
++        ids: [one.id, two.id],
++        add: [b.id],
++        remove: [a.id],
++        enable: true,
++        applyToExisting: false,
++      }),
++    ).toEqual({ updated: 2, enabled: 1 });
++    const byName = new Map(core.rss.rules().map((r) => [r.name, r]));
++    expect(byName.get('One')).toMatchObject({ enabled: true, assignedFeedIds: [b.id] });
++    expect(byName.get('Two')).toMatchObject({ enabled: true, assignedFeedIds: [b.id] });
++    expect(byName.get('Three')).toMatchObject({ enabled: false, assignedFeedIds: [] });
++    expect(untouched.id).toBe(byName.get('Three')!.id);
++
++    // Nothing to change: no writes.
++    expect(
++      await core.rss.setRuleFeeds({
++        ids: [one.id],
++        add: [b.id],
++        remove: [],
++        enable: true,
++        applyToExisting: false,
++      }),
++    ).toEqual({ updated: 0, enabled: 0 });
++    await expect(
++      core.rss.setRuleFeeds({
++        ids: [one.id],
++        add: ['nope'],
++        remove: [],
++        enable: false,
++        applyToExisting: false,
++      }),
++    ).rejects.toThrow(/Feed not found/);
++  });
+ });
+diff --git a/packages/core/src/rss/rss-service.ts b/packages/core/src/rss/rss-service.ts
+index 7dd9407..29b2117 100644
+--- a/packages/core/src/rss/rss-service.ts
++++ b/packages/core/src/rss/rss-service.ts
+@@ -4,6 +4,8 @@ import type {
+   FeedDTO,
+   RssHistoryDTO,
+   RuleDTO,
++  RuleFeedsRequest,
++  RuleFeedsResult,
+   RuleImportResult,
+   RuleInput,
+ } from '@draxmax/shared';
+@@ -338,6 +340,40 @@ export class RssService {
+     return doomed.length;
+   }
+ 
++  /**
++   * Adds and removes feeds on several rules in one go. A rule left with no feeds applies to
++   * every feed, as in the editor. With `enable`, disabled rules that end up with a feed are
++   * turned on (rules imported without a subscribed feed come in disabled).
++   */
++  async setRuleFeeds(req: RuleFeedsRequest): Promise<RuleFeedsResult> {
++    const known = new Set(this.repo.feeds().map((f) => f.id));
++    const unknown = req.add.find((id) => !known.has(id));
++    if (unknown) throw new CoreError('invalid_input', 'Feed not found');
++    const remove = new Set(req.remove);
++    const ids = new Set(req.ids);
++    const changed: RuleRow[] = [];
++    let enabled = 0;
++    for (const rule of this.repo.rules()) {
++      if (!ids.has(rule.id)) continue;
++      const feeds = [
++        ...new Set([...rule.assignedFeedIds, ...req.add].filter((id) => !remove.has(id))),
++      ];
++      const turnOn = req.enable && !rule.enabled && feeds.length > 0;
++      const sameFeeds =
++        feeds.length === rule.assignedFeedIds.length &&
++        feeds.every((id) => rule.assignedFeedIds.includes(id));
++      if (sameFeeds && !turnOn) continue;
++      const next = { ...rule, assignedFeedIds: feeds, enabled: rule.enabled || turnOn };
++      this.repo.saveRule(next);
++      changed.push(next);
++      if (turnOn) enabled++;
++    }
++    if (req.applyToExisting)
++      for (const rule of changed) if (rule.enabled) await this.applyRuleToExisting(rule);
++    this.deps.events.emit('rss:updated', null);
++    return { updated: changed.length, enabled };
++  }
++
+   /** Which current articles a (possibly unsaved) rule would match, ignoring history. */
+   preview(input: RuleInput): ArticleDTO[] {
+     try {
+diff --git a/packages/shared/src/api.ts b/packages/shared/src/api.ts
+index 9c77eb9..6690e1c 100644
+--- a/packages/shared/src/api.ts
++++ b/packages/shared/src/api.ts
+@@ -244,6 +244,24 @@ export type RuleInput = z.infer<typeof ruleSchema>;
+ 
+ export const ruleIdsSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(5000) });
+ 
++/** Adds and removes feeds on several rules at once. */
++export const ruleFeedsSchema = z.object({
++  ids: z.array(z.string().min(1)).min(1).max(5000),
++  add: z.array(z.string().min(1)).max(500).default([]),
++  remove: z.array(z.string().min(1)).max(500).default([]),
++  /** Turn on disabled rules that end up with at least one feed. */
++  enable: z.boolean().default(false),
++  /** Run changed rules against articles already in their feeds (may download a backlog). */
++  applyToExisting: z.boolean().default(false),
++});
++export type RuleFeedsRequest = z.infer<typeof ruleFeedsSchema>;
++export interface RuleFeedsResult {
++  /** Rules whose feeds or enabled state changed. */
++  updated: number;
++  /** Rules turned on by `enable`. */
++  enabled: number;
++}
++
+ export const markReadSchema = z.object({
+   feedId: z.string().optional(),
+   articles: z
+-- 
+2.43.0
+

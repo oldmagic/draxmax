@@ -1,0 +1,38 @@
+{
+  "name": "draxmax",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.19.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @draxmax/server --filter @draxmax/web dev",
+    "dev:desktop": "pnpm --filter @draxmax/web build && pnpm --filter @draxmax/desktop dev",
+    "build": "pnpm --filter @draxmax/web build && pnpm --filter @draxmax/server build",
+    "build:desktop": "pnpm --filter @draxmax/web build && pnpm --filter @draxmax/desktop dist",
+    "start": "node apps/server/dist/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "typecheck": "pnpm -r --parallel typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "build:desktop:dir": "pnpm --filter @draxmax/web build && pnpm --filter @draxmax/desktop dist:dir"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@playwright/test": "^1.63.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.0.0",
+    "eslint": "^10.12.0",
+    "eslint-plugin-react-hooks": "^7.0.0",
+    "globals": "^16.0.0",
+    "js-yaml": "^4.3.2",
+    "prettier": "^3.6.0",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^5.0.3"
+  }
+}

@@ -1,0 +1,48 @@
+# Example: DraxMax next to Sonarr, Radarr, Prowlarr and Jellyfin sharing one /data tree.
+# Use the same PUID/PGID everywhere and the same host path (/srv/media here) so hard links work.
+services:
+  draxmax:
+    image: ghcr.io/draxmax/draxmax:latest
+    network_mode: host
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+      - DOWNLOAD_PATH=/data/torrents
+      - WEBUI_USERNAME=admin
+      - WEBUI_PASSWORD=change-me-please
+    volumes:
+      - ./config/draxmax:/config
+      - /srv/media:/data
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    environment: [PUID=1000, PGID=1000, TZ=Europe/Paris]
+    volumes: ['./config/sonarr:/config', '/srv/media:/data']
+    ports: ['8989:8989']
+    restart: unless-stopped
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    environment: [PUID=1000, PGID=1000, TZ=Europe/Paris]
+    volumes: ['./config/radarr:/config', '/srv/media:/data']
+    ports: ['7878:7878']
+    restart: unless-stopped
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    environment: [PUID=1000, PGID=1000, TZ=Europe/Paris]
+    volumes: ['./config/prowlarr:/config']
+    ports: ['9696:9696']
+    restart: unless-stopped
+
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    user: 1000:1000
+    volumes: ['./config/jellyfin:/config', '/srv/media/library:/media:ro']
+    ports: ['8096:8096']
+    restart: unless-stopped
+
+# Tip: in DraxMax, add `/data/library/tv` and `/data/library/movies` under
+# Settings → Media → Library folders so Upcoming knows what you already own.
