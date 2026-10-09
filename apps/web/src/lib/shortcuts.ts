@@ -7,6 +7,9 @@ export const SHORTCUTS: [string, string][] = [
   ['Delete', 'Remove selected torrents'],
   ['Esc', 'Clear selection'],
   ['N', 'Add torrents'],
-  ['G then D / U / R / I / S / ,', 'Go to Downloads / Upcoming / RSS / Sites / Stats / Settings'],
+  [
+    'G then D / U / R / I / N / S / ,',
+    'Go to Downloads / Upcoming / RSS / Sites / Notifications / Stats / Settings',
+  ],
   ['?', 'Show keyboard shortcuts'],
 ];

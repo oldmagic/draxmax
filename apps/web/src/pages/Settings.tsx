@@ -300,6 +300,44 @@ export function SettingsPage() {
             <SwitchField ctx={ctx} k="notifyOnComplete" label="When a download finishes" />
             <SwitchField ctx={ctx} k="notifyOnError" label="When a torrent fails" />
             <SwitchField ctx={ctx} k="notifyOnRssMatch" label="When an RSS rule adds a torrent" />
+            <NumberField
+              ctx={ctx}
+              k="notificationRetentionDays"
+              label="Keep notification history for"
+              unit="days"
+              min={1}
+              max={3650}
+            />
+            <SwitchField
+              ctx={ctx}
+              k="historyDownload"
+              label="Record downloads"
+              hint="Added, finished, failed, seeded."
+            />
+            <SwitchField
+              ctx={ctx}
+              k="historyRss"
+              label="Record RSS and missing episodes"
+              hint="Rule downloads, failing feeds and site searches."
+            />
+            <SwitchField
+              ctx={ctx}
+              k="historyUpcoming"
+              label="Record Upcoming"
+              hint="New seasons and sequels of what you have."
+            />
+            <SwitchField
+              ctx={ctx}
+              k="historySecurity"
+              label="Record security events"
+              hint="Sign-ins, failed logins, login changes."
+            />
+            <SwitchField
+              ctx={ctx}
+              k="historySystem"
+              label="Record system events"
+              hint="Settings changes and engine problems."
+            />
             {!desktop && <BrowserNotifications />}
           </Section>
           <Security data={data} />

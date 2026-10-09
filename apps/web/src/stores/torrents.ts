@@ -76,6 +76,17 @@ function handle(event: ServerEvent): void {
     case 'sites:updated':
       void queryClient.invalidateQueries({ queryKey: ['sites'] });
       break;
+    case 'notifications:updated':
+      queryClient.setQueryData(['notifications', 'count'], { unread: event.unread });
+      void queryClient.invalidateQueries({ queryKey: ['notifications', 'list'] });
+      // Security warnings also reach a hidden tab as a browser notification.
+      if (
+        event.item?.category === 'security' &&
+        event.item.level === 'warning' &&
+        event.item.count === 1
+      )
+        notify('error', event.item.title, event.item.body ?? '');
+      break;
   }
 }
 

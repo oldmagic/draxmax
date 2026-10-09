@@ -93,6 +93,8 @@ const samePath = (a: string, b: string) => a.replace(/[\\/]+$/, '') === b.replac
  */
 export class MissingService {
   private running: Promise<void> | null = null;
+  /** Sources that failed during the current run (name → error), for the run summary. */
+  private runErrors = new Map<string, string>();
   private current: string | null = null;
   private timers: NodeJS.Timeout[] = [];
   private closed = false;
@@ -200,6 +202,7 @@ export class MissingService {
   private async doRun(opts: { force?: boolean; ruleIds?: string[] }): Promise<void> {
     const sources = this.sources();
     if (sources.length === 0) return;
+    this.runErrors = new Map();
     const settings = this.deps.settings();
     const now = Date.now();
     const state = this.stored();
@@ -232,6 +235,11 @@ export class MissingService {
       final.lastRunAdded = added;
     }
     this.store(final);
+    if (due.length)
+      this.deps.events.emit('missing:run', {
+        added,
+        failing: [...this.runErrors].map(([source, error]) => ({ source, error })),
+      });
   }
 
   private async checkRule(
@@ -285,6 +293,7 @@ export class MissingService {
         results.push(...(await source.search(query)));
       } catch (err) {
         errors.push(`${source.name}: ${(err as Error).message}`);
+        this.runErrors.set(source.name, (err as Error).message);
       }
     }
     const shown = { ...base, title: id.title, season: id.season, have: sorted(have) };
@@ -342,6 +351,8 @@ export class MissingService {
     let torrentId: string | null = null;
     let error: string | null = null;
     const opts = {
+      origin: 'missing' as const,
+      originDetail: rule.name,
       category: rule.category,
       tags: rule.tags,
       savePath: rule.savePath,

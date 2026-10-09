@@ -198,8 +198,15 @@ export class AuthService {
       for (const [k, v] of this.failures)
         if (Date.now() - v.since >= FAILURE_WINDOW_MS) this.failures.delete(k);
     const f = this.failures.get(ip);
-    if (f && Date.now() - f.since < FAILURE_WINDOW_MS && f.count >= MAX_FAILURES)
+    if (f && Date.now() - f.since < FAILURE_WINDOW_MS && f.count >= MAX_FAILURES) {
+      this.security(
+        'warning',
+        `Login blocked: too many attempts from ${ip}`,
+        null,
+        `login-blocked:${ip}`,
+      );
       return 'rate_limited';
+    }
     // Always run the (slow) password check so timing doesn't reveal valid usernames.
     const passwordOk = this.configured() && verifyPassword(password, this.passwordHash());
     const ok = safeEqual(username, this.core.settings.get().webuiUsername) && passwordOk;
@@ -208,6 +215,12 @@ export class AuthService {
         f && Date.now() - f.since < FAILURE_WINDOW_MS ? f : { count: 0, since: Date.now() };
       cur.count++;
       this.failures.set(ip, cur);
+      this.security(
+        'warning',
+        `Failed login for “${username.slice(0, 64)}” from ${ip}`,
+        null,
+        `login-failed:${ip}`,
+      );
       return 'wrong';
     }
     this.failures.delete(ip);
@@ -217,6 +230,7 @@ export class AuthService {
   /** Returns a new session id on success. */
   login(req: FastifyRequest, username: string, password: string): string | 'rate_limited' | null {
     const res = this.checkCredentials(req, username, password);
+    if (res === 'ok') this.security('info', `Signed in from ${req.ip}`, null, `login:${req.ip}`);
     return res === 'ok' ? this.createSession() : res === 'rate_limited' ? res : null;
   }
 
@@ -244,15 +258,38 @@ export class AuthService {
     if (sid) this.sessions.delete(sid);
   }
 
+  /** Records a security event in the notification history. */
+  security(
+    level: 'info' | 'warning',
+    title: string,
+    body: string | null = null,
+    dedupeKey?: string,
+  ): void {
+    this.core.notifications.add({
+      category: 'security',
+      level,
+      title,
+      body,
+      link: '/settings',
+      dedupeKey,
+    });
+  }
+
   /** Stores new credentials and invalidates every existing session. */
   setCredentials(username: string, password: string): void {
     if (this.managedByEnv())
       throw new Error('Credentials are set by WEBUI_USERNAME / WEBUI_PASSWORD');
+    const existed = this.configured();
     this.core.settings.update({
       webuiUsername: username,
       webuiPasswordHash: hashPassword(password),
     });
     this.sessions.clear();
+    this.security(
+      'info',
+      existed ? 'Web UI login changed' : 'Web UI login created',
+      `User “${username}”. Every other session was signed out.`,
+    );
   }
 
   /** Removes the login (only allowed from loopback or with the API token). */
@@ -261,6 +298,11 @@ export class AuthService {
       throw new Error('Credentials are set by WEBUI_USERNAME / WEBUI_PASSWORD');
     this.core.settings.update({ webuiUsername: '', webuiPasswordHash: '' });
     this.sessions.clear();
+    this.security(
+      'warning',
+      'Web UI login removed',
+      'Only this computer can use DraxMax until a new login is created.',
+    );
   }
 
   setCookie(req: FastifyRequest, reply: FastifyReply, sid: string): void {

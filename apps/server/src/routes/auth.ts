@@ -23,6 +23,8 @@ export async function authRoutes(
       return reply.status(429).send({ error: 'Too many attempts. Try again in a minute.' });
     if (!sid) return reply.status(401).send({ error: 'Wrong username or password' });
     auth.setCookie(req, reply, sid);
+    // Report the new session as signed in (the cookie only arrives with the next request).
+    req.cookies[SESSION_COOKIE] = sid;
     return auth.status(req);
   });
 
@@ -41,13 +43,16 @@ export async function authRoutes(
     const { username, password, setupCode } = newCredentials
       .extend({ setupCode: z.string().max(64).optional() })
       .parse(req.body);
-    if (!auth.setupAllowed(req, setupCode))
+    if (!auth.setupAllowed(req, setupCode)) {
+      if (setupCode)
+        auth.security('warning', `Wrong setup code from ${req.ip}`, null, `setup-code:${req.ip}`);
       return reply.status(403).send({
         error: setupCode
           ? 'Wrong setup code'
           : 'Enter the setup code from the DraxMax log (docker logs draxmax)',
         setupCodeRequired: true,
       });
+    }
     auth.setCredentials(username, password);
     const sid = auth.createSession();
     auth.setCookie(req, reply, sid);

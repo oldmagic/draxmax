@@ -155,4 +155,21 @@ export const migrations: string[] = [
   ALTER TABLE sites ADD COLUMN must_match TEXT NOT NULL DEFAULT '[]';
   ALTER TABLE sites ADD COLUMN must_not_match TEXT NOT NULL DEFAULT '[]';
   `,
+  `
+  CREATE TABLE notifications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    category    TEXT NOT NULL,
+    level       TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    body        TEXT,
+    link        TEXT,
+    dedupe_key  TEXT,
+    count       INTEGER NOT NULL DEFAULT 1,
+    read        INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+  );
+  CREATE INDEX notifications_by_read ON notifications(read, id);
+  CREATE INDEX notifications_by_key ON notifications(dedupe_key);
+  `,
 ];

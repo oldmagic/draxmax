@@ -12,6 +12,8 @@ import { WatchFolder } from './watch/watch-folder.ts';
 import { RssService, type RssServiceDeps } from './rss/rss-service.ts';
 import { MissingService, type MissingDeps } from './missing/missing-service.ts';
 import { SiteService, type SiteFetch } from './sites/site-service.ts';
+import { NotificationService } from './notifications/notification-service.ts';
+import { wireNotifications } from './notifications/notifier.ts';
 import { fileKeyCipher } from './settings/secret-cipher.ts';
 import { SettingsStore, type SecretCipher } from './settings/settings.ts';
 import type { TorrentEngine } from './torrent/engine.ts';
@@ -50,6 +52,7 @@ export interface Core {
   rss: RssService;
   missing: MissingService;
   sites: SiteService;
+  notifications: NotificationService;
   upcoming: UpcomingService;
   stats: StatsService;
   watch: WatchFolder;
@@ -87,6 +90,8 @@ export function createCore(opts: CoreOptions): Core {
 
   const db: Database = openDatabase(join(opts.configPath, 'draxmax.db'));
   const events = new CoreEvents();
+  const notifications = new NotificationService({ db, events, settings: () => settings.get() });
+  const unwireNotifications = wireNotifications(events, notifications);
   let engineFailure: Error | null = null;
   events.on('engine:fatal', (err) => (engineFailure ??= err));
 
@@ -171,6 +176,27 @@ export function createCore(opts: CoreOptions): Core {
 
   // Live-applied settings; connection settings need a restart (see RESTART_KEYS).
   settings.onChange((s, changed) => {
+    // Key names only, never values (some are secrets). Login changes are recorded by the
+    // server as security events; internal bookkeeping keys aren't interesting.
+    const shown = changed.filter(
+      (k) =>
+        ![
+          'webuiUsername',
+          'webuiPasswordHash',
+          'runAsUid',
+          'runAsGid',
+          'firstRunCompleted',
+        ].includes(k),
+    );
+    if (shown.length)
+      notifications.add({
+        category: 'system',
+        level: 'info',
+        title: 'Settings changed',
+        body: shown.join(', '),
+        link: '/settings',
+        dedupeKey: `settings:${shown.join(',')}`,
+      });
     if (changed.includes('downloadLimit') || changed.includes('uploadLimit')) {
       engine.setRateLimits(s.downloadLimit, s.uploadLimit);
     }
@@ -201,6 +227,7 @@ export function createCore(opts: CoreOptions): Core {
     rss,
     missing,
     sites,
+    notifications,
     upcoming,
     stats,
     watch,
@@ -215,6 +242,7 @@ export function createCore(opts: CoreOptions): Core {
       closed = true;
       rss.stop();
       missing.stop();
+      unwireNotifications();
       upcoming.stop();
       stats.stop();
       watch.stop();

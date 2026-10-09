@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { DownloadRule, TorrentItem } from './models.ts';
 import type { StatsSnapshot } from './stats.ts';
+import type { NotificationDTO } from './notifications.ts';
 
 /** Recursively converts `Date` fields to ISO strings, as they appear on the wire. */
 export type Wire<T> = T extends Date
@@ -90,7 +91,8 @@ export type ServerEvent =
   | { type: 'stats:tick'; stats: StatsSnapshot }
   | { type: 'upcoming:updated' }
   | { type: 'missing:updated' }
-  | { type: 'sites:updated' };
+  | { type: 'sites:updated' }
+  | { type: 'notifications:updated'; unread: number; item: NotificationDTO | null };
 
 // --- M2: torrent controls, trackers, categories, settings ---------------------
 

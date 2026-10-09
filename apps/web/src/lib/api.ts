@@ -16,6 +16,8 @@ import type {
   UpcomingResponse,
   MissingResponse,
   SiteDTO,
+  NotificationCategory,
+  NotificationList,
   SiteInput,
   SitePresetDTO,
   SiteTestResult,
@@ -197,6 +199,29 @@ export const api = {
   setRuleFeeds: (body: Partial<RuleFeedsRequest> & { ids: string[] }) =>
     request<RuleFeedsResult>('POST', '/api/rss/rules/feeds', body),
   previewRule: (r: RuleInput) => request<ArticleDTO[]>('POST', '/api/rss/rules/preview', r),
+  notifications: (q: {
+    unread?: boolean;
+    category?: NotificationCategory | null;
+    q?: string;
+    before?: number;
+    limit?: number;
+  }) => {
+    const p = new URLSearchParams();
+    if (q.unread) p.set('unread', 'true');
+    if (q.category) p.set('category', q.category);
+    if (q.q) p.set('q', q.q);
+    if (q.before) p.set('before', String(q.before));
+    if (q.limit) p.set('limit', String(q.limit));
+    return request<NotificationList>('GET', `/api/notifications?${p}`);
+  },
+  notificationCount: () => request<{ unread: number }>('GET', '/api/notifications/count'),
+  markNotifications: (body: { ids?: number[]; all?: boolean; read: boolean }) =>
+    request<{ changed: number; unread: number }>('POST', '/api/notifications/read', body),
+  clearNotifications: (readOnly: boolean) =>
+    request<{ deleted: number; unread: number }>(
+      'DELETE',
+      `/api/notifications${readOnly ? '?read=true' : ''}`,
+    ),
   sites: () => request<SiteDTO[]>('GET', '/api/sites'),
   sitePresets: () => request<SitePresetDTO[]>('GET', '/api/sites/presets'),
   createSite: (s: SiteInput) => request<SiteDTO>('POST', '/api/sites', s),

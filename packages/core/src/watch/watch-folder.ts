@@ -88,10 +88,11 @@ export class WatchFolder {
           .map((l) => l.trim())
           .filter((l) => MAGNET_RE.test(l));
         if (links.length === 0) return false;
-        for (const l of links) this.addSafely(() => this.deps.torrents.addMagnet(l));
+        for (const l of links)
+          this.addSafely(() => this.deps.torrents.addMagnet(l, { origin: 'watch' }));
         return true;
       }
-      await this.deps.torrents.addTorrentFile(await readFile(path));
+      await this.deps.torrents.addTorrentFile(await readFile(path), { origin: 'watch' });
       return true;
     } catch (err) {
       // Already in the list counts as handled.

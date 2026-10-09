@@ -272,6 +272,25 @@ export class UpcomingService {
       updatedAt: new Date().toISOString(),
       errors,
     });
+    this.announceNew(this.get().forYou);
+  }
+
+  /**
+   * Emits For You items not seen before (new season, sequel, …). The first run only records
+   * what's there, so an existing library doesn't flood the notification history.
+   */
+  private announceNew(items: UpcomingItemDTO[]): void {
+    const row = this.deps.db.prepare("SELECT value FROM kv WHERE key = 'upcoming_seen'").get() as
+      { value: string } | undefined;
+    const seen = new Set<string>(row ? (JSON.parse(row.value) as string[]) : []);
+    const fresh = row ? items.filter((i) => !seen.has(i.id)) : [];
+    for (const i of items) seen.add(i.id);
+    this.deps.db
+      .prepare(
+        "INSERT INTO kv (key, value) VALUES ('upcoming_seen', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      )
+      .run(JSON.stringify([...seen].slice(-5000)));
+    if (fresh.length) this.deps.events.emit('upcoming:new', fresh);
   }
 
   /** Links library entries to TMDB/AniList ids (once per entry). */

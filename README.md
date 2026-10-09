@@ -137,6 +137,11 @@ Everything is configurable in **Settings**. Every value can also be set by an en
   - **Release filters** per site: *Must match* and *Must not match* regexes (case-insensitive, one per line) decide what that site may download. For example, `-(EGEN|NORViNE)$` takes only those groups and `\b(HD)?CAM\b` blocks cams. Test search marks what they keep.
   - Download links are built from the pattern, e.g. `/download.php?id={id}&passkey={passkey}`. A site's cookies are sent only to its own URLs, which also covers its RSS feeds.
   - Site facts come from the [autobrr](https://github.com/autobrr/autobrr) indexer definitions; regenerate them with `node scripts/gen-site-presets.mjs`.
+- **Notifications:** the bell (top of the sidebar, `g` then `n` for the full page) keeps a history of what happened. That covers torrents added (and from where), finished, failed or seeded; RSS and missing-episode downloads; feeds or site searches that start failing; new seasons in For You; sign-ins and failed logins; settings changes; and engine problems.
+  - Repeats within 10 minutes are combined (`×4`).
+  - Mark items read or unread one by one, in bulk, or all at once. Filter by kind or search.
+  - It's stored on the server, so every device sees the same list.
+  - *Settings → Notifications* sets how long it's kept and which kinds are recorded.
 - **Upcoming:** "Already have" teaches the library, and "Ignore" hides an item; both can be undone. "Search & Add" opens your search site, or copies a ready-made query such as `The Expanse S05`.
 - **Keyboard:** `?` lists every shortcut. `g` then `d`/`u`/`r`/`s`/`,` jumps between pages.
 

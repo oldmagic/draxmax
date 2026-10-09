@@ -1,8 +1,9 @@
 import { EventEmitter } from 'node:events';
-import type { StatsSnapshot, TorrentItem } from '@draxmax/shared';
+import type { NotificationDTO, StatsSnapshot, TorrentItem, UpcomingItemDTO } from '@draxmax/shared';
 
 export interface CoreEventMap {
-  'torrent:added': [TorrentItem];
+  /** Second argument: who added it ("rss" with the rule name, "watch", "manual", …). */
+  'torrent:added': [TorrentItem, { origin: string; detail: string | null }];
   'torrent:removed': [string];
   'torrent:done': [TorrentItem];
   /** Removed from the list after reaching the seeding time limit. */
@@ -22,6 +23,14 @@ export interface CoreEventMap {
   'missing:updated': [null];
   /** Sites were added, changed, tested or removed. */
   'sites:updated': [null];
+  /** A feed started failing (ok: false) or works again (ok: true). */
+  'rss:feed-status': [{ feedId: string; title: string; ok: boolean; error: string | null }];
+  /** A missing-episode run finished: torrents added and sources that failed. */
+  'missing:run': [{ added: number; failing: { source: string; error: string }[] }];
+  /** Upcoming found For You items it hadn't shown before. */
+  'upcoming:new': [UpcomingItemDTO[]];
+  /** The notification history changed (new entry, read state, cleared). */
+  'notifications:updated': [{ unread: number; item: NotificationDTO | null }];
   /** Recoverable engine problem (e.g. uTP port unavailable, continuing TCP-only). */
   'engine:warning': [Error];
 }
