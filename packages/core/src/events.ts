@@ -1,0 +1,45 @@
+import { EventEmitter } from 'node:events';
+import type { StatsSnapshot, TorrentItem } from '@draxmax/shared';
+
+export interface CoreEventMap {
+  'torrent:added': [TorrentItem];
+  'torrent:removed': [string];
+  'torrent:done': [TorrentItem];
+  /** Removed from the list after reaching the seeding time limit. */
+  'torrent:seeded': [TorrentItem];
+  'torrent:error': [TorrentItem];
+  /** The BitTorrent engine died (e.g. port in use). The host should report and restart. */
+  'engine:fatal': [Error];
+  /** A feed was refreshed or its articles changed (feed id, or null for many). */
+  'rss:updated': [string | null];
+  /** A download rule matched an article and added (or found) the torrent. */
+  'rss:match': [{ ruleName: string; title: string; status: 'added' | 'duplicate' }];
+  /** One-second statistics sample. */
+  'stats:tick': [StatsSnapshot];
+  /** Upcoming lists changed or a refresh started/finished. */
+  'upcoming:updated': [null];
+  /** Missing-episode check state changed (run started, show checked, finished). */
+  'missing:updated': [null];
+  /** Sites were added, changed, tested or removed. */
+  'sites:updated': [null];
+  /** Recoverable engine problem (e.g. uTP port unavailable, continuing TCP-only). */
+  'engine:warning': [Error];
+}
+
+/** Strongly typed event bus shared by all core services. */
+export class CoreEvents {
+  private readonly emitter = new EventEmitter();
+
+  constructor() {
+    this.emitter.setMaxListeners(100);
+  }
+
+  on<E extends keyof CoreEventMap>(event: E, fn: (...args: CoreEventMap[E]) => void): () => void {
+    this.emitter.on(event, fn as (...args: unknown[]) => void);
+    return () => this.emitter.off(event, fn as (...args: unknown[]) => void);
+  }
+
+  emit<E extends keyof CoreEventMap>(event: E, ...args: CoreEventMap[E]): void {
+    this.emitter.emit(event, ...args);
+  }
+}

@@ -1,0 +1,47 @@
+appId: org.draxmax.app
+productName: DraxMax
+copyright: Copyright © DraxMax contributors
+directories:
+  app: stage
+  output: release
+  buildResources: resources
+# Everything is pre-bundled into stage/; don't let electron-builder reinstall dependencies.
+npmRebuild: false
+nodeGypRebuild: false
+buildDependenciesFromSource: false
+files:
+  - '**/*'
+  - '!**/*.map'
+extraResources:
+  - from: ../web/dist
+    to: web
+  - from: resources
+    to: resources
+protocols:
+  - name: Magnet link
+    schemes: [magnet]
+fileAssociations:
+  - ext: torrent
+    name: Torrent file
+    mimeType: application/x-bittorrent
+    role: Viewer
+linux:
+  target: [AppImage, deb]
+  # Placeholder maintainer; replace before publishing packages.
+  maintainer: DraxMax contributors <maintainers@draxmax.invalid>
+  category: Network
+  icon: resources/icon.png
+  mimeTypes: [x-scheme-handler/magnet, application/x-bittorrent]
+deb:
+  depends: [libnotify4, libxss1]
+win:
+  target: [nsis]
+  icon: resources/icon.png
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+mac:
+  target: [dmg]
+  category: public.app-category.utilities
+  icon: resources/icon.png

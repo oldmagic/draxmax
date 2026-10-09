@@ -1,0 +1,2030 @@
+{
+  "source": "autobrr/autobrr@478be9a9e9f9a92d046f13136c5daa30b6008ab1 internal/indexer/definitions (site facts only)",
+  "presets": [
+    {
+      "id": "0dayfiles",
+      "name": "0DayFiles",
+      "privacy": "private",
+      "urls": ["https://0dayfiles.net/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to My Settings > Settings -> RSS Key, and copy your RSS Key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "abnormal",
+      "name": "ABNormal",
+      "privacy": "private",
+      "urls": ["https://abn.lol/"],
+      "fields": [
+        {
+          "name": "uid",
+          "label": "User Id",
+          "help": "This is the UserId in a RSS link.",
+          "secret": true
+        },
+        {
+          "name": "passkey",
+          "label": "Torrent key",
+          "help": "This is the TorrentKey in a RSS link.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/Torrent/Details?ReleaseId={id}",
+      "downloadUrl": "/Feed/Download?UserID={uid}&TorrentKey={passkey}&ReleaseId={id}",
+      "searchUrls": []
+    },
+    {
+      "id": "acidlounge",
+      "name": "Acid-Lounge",
+      "privacy": "private",
+      "urls": ["https://www.acid-lounge.org.uk/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Pass key",
+          "help": "Your passkey",
+          "secret": true
+        },
+        {
+          "name": "uid",
+          "label": "User ID",
+          "help": "Your User ID",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/rssdownload.php?passkey={passkey}&uid={uid}&tid={id}",
+      "searchUrls": []
+    },
+    {
+      "id": "aither",
+      "name": "Aither",
+      "privacy": "private",
+      "urls": ["https://aither.cc/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to your profile tab, Settings > Security, copy RSS Key (RID)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "alpharatio",
+      "name": "AlphaRatio",
+      "privacy": "private",
+      "urls": ["https://alpharatio.cc/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "animebytes",
+      "name": "AnimeBytes",
+      "privacy": "private",
+      "urls": ["https://animebytes.tv/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "PassKey",
+          "help": "Settings -> Account -> Passkey.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
+      "downloadUrl": "/torrent/{id}/download/{passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "animeworld",
+      "name": "AnimeWorld",
+      "privacy": "private",
+      "urls": ["https://animeworld.cx/"],
+      "fields": [
+        {
+          "name": "rss_key",
+          "label": "RSS key",
+          "help": "Your RSS key, required to download torrent files. (User-Avatar -> 'Meine Sicherheit' -> 'RSS Key (RID)')",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rss_key}",
+      "searchUrls": []
+    },
+    {
+      "id": "anthelion",
+      "name": "Anthelion",
+      "privacy": "private",
+      "urls": ["https://anthelion.me/"],
+      "fields": [
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "bemaniso",
+      "name": "Bemaniso",
+      "privacy": "private",
+      "urls": ["https://bemaniso.ws/"],
+      "fields": [
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        },
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={torrentInfoId}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "beyondhd",
+      "name": "BeyondHD",
+      "privacy": "private",
+      "urls": ["https://beyond-hd.me/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to your profile, My Security, RSS Key and copy RSS key.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/autodl?id={id}",
+      "downloadUrl": "/torrent/download/auto.{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "bithdtv",
+      "name": "BIT-HDTV",
+      "privacy": "private",
+      "urls": ["https://www.bit-hdtv.com/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Pass key",
+          "help": "Your passkey",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/rssdownload.php?id={id}&passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "bithumen",
+      "name": "BitHUmen",
+      "privacy": "private",
+      "urls": ["https://bithumen.be/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "This is your passkey you can find in a RSS link or in the announce url of a torrent.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download/{passkey}/{id}.torrent",
+      "searchUrls": []
+    },
+    {
+      "id": "bitsexy",
+      "name": "BitSexy",
+      "privacy": "private",
+      "urls": ["https://bitsexy.org/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Copy your passkey from the profile and paste it in the field below.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?torrent={id}&torrent_pass={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "btfiles",
+      "name": "BitTorrentFiles",
+      "privacy": "private",
+      "urls": ["https://bittorrentfiles.me/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "The rsskey in your RSS feed link",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?torrent={id}&k={rsskey}&ssl=1",
+      "searchUrls": []
+    },
+    {
+      "id": "BJ-Share",
+      "name": "BJ-Share",
+      "privacy": "private",
+      "urls": ["https://bj-share.info/"],
+      "fields": [
+        {
+          "name": "apikey",
+          "label": "API Key",
+          "help": "Go to your Profile tab, Settings > API keys > Define a name > Set Download > Copy the API key > Save Configurations",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?torrentid={id}",
+      "downloadUrl": "/torrent/download/{id}.{apikey}",
+      "searchUrls": []
+    },
+    {
+      "id": "btn",
+      "name": "BroadcasTheNet",
+      "privacy": "private",
+      "urls": ["https://broadcasthe.net/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        },
+        {
+          "name": "api_key",
+          "label": "API Key",
+          "help": "Username -> Edit Profile -> API",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "brks",
+      "name": "BrokenStones",
+      "privacy": "private",
+      "urls": ["https://brokenstones.is/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={groupId}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "capybarabr",
+      "name": "CapybaraBR",
+      "privacy": "private",
+      "urls": ["https://capybarabr.com/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to your profile tab, Settings > Security, copy RSS Key (RID)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "crt",
+      "name": "Cathode-Ray Tube",
+      "privacy": "private",
+      "urls": ["https://www.cathode-ray.tube/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "czteam",
+      "name": "CZTeam",
+      "privacy": "private",
+      "urls": ["https://czteam.me"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Go to My Settings -> Passkey and copy your Passkey",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?torrent={id}&passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "danishbits",
+      "name": "DanishBits",
+      "privacy": "private",
+      "urls": ["https://danishbits.me/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS Key",
+          "help": "Go to your profile, Settings > RSS key, and copy the RSS Key (RID)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "danishbytes",
+      "name": "DanishBytes",
+      "privacy": "private",
+      "urls": ["https://danishbytes.club/", "https://danishbytes2.org/", "https://dbytes.org/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "RSS key",
+          "help": "Go to your profile tab under safety, copy RSS Key (RID)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "darkpeers",
+      "name": "DarkPeers",
+      "privacy": "private",
+      "urls": ["https://darkpeers.org"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to My Settings > RSS Key, and copy your RSS Key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "dasunerwartete",
+      "name": "DasUnerwartete",
+      "privacy": "private",
+      "urls": ["https://dasunerwartete.biz/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS Key",
+          "help": "Copy from a direct download RSS link. (Torrents > RSS Feed)",
+          "secret": true
+        },
+        {
+          "name": "userId",
+          "label": "User ID",
+          "help": "Check your profile URL and copy the ID.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/rss-download.php?uid={userId}&pk={rsskey}&torrent={id}",
+      "searchUrls": []
+    },
+    {
+      "id": "digitalcore",
+      "name": "DigitalCore",
+      "privacy": "private",
+      "urls": ["https://digitalcore.club/", "https://prxy.digitalcore.club/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "PassKey",
+          "help": "Settings -> Security -> Passkey.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrent/{id}/",
+      "downloadUrl": "/api/v1/torrents/download/{id}/{passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "dirtybytes",
+      "name": "DirtyBytes",
+      "privacy": "private",
+      "urls": ["https://dirtybytes.net/", "https://trackerprxy.dirtybytes.net/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "PassKey",
+          "help": "Settings -> Security -> Passkey.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrent/{id}/",
+      "downloadUrl": "/api/v1/torrents/download/{id}/{passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "docspedia",
+      "name": "DocsPedia",
+      "privacy": "private",
+      "urls": ["https://www.docspedia.world/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "The passkey in your profile.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?torrent={id}&torrent_pass={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "emp",
+      "name": "Empornium",
+      "privacy": "private",
+      "urls": ["https://emparadise.rs", "https://www.empornium.sx/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "enthralled",
+      "name": "Enthralled",
+      "privacy": "private",
+      "urls": ["https://enthralled.me/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "f1carreras",
+      "name": "F1Carreras",
+      "privacy": "private",
+      "urls": ["https://f1carreras.xyz/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to Settings > RSS Key, and copy your RSS Key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "fappaizuri",
+      "name": "Fappaizuri",
+      "privacy": "private",
+      "urls": ["https://fappaizuri.me/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "To be found in the navigation pane under \"Your Profile\".",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents-details.php?id={id}",
+      "downloadUrl": "/download.php?id={id}&hit=1&passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "fl",
+      "name": "FileList",
+      "privacy": "private",
+      "urls": ["https://filelist.io/", "https://thefl.org/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "The passkey in your profile.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "finelite",
+      "name": "FinElite",
+      "privacy": "private",
+      "urls": ["https://finelite.org/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Click on Settings > Torrent Settings > Copy the Auth key and paste it here.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details/{id}",
+      "downloadUrl": "/lataa/{authkey}/{id}.torrent",
+      "searchUrls": []
+    },
+    {
+      "id": "funfile",
+      "name": "FunFile",
+      "privacy": "private",
+      "urls": ["https://www.funfile.org/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "The passkey in your FunFile RSS feed link.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php/{id}/{passkey}/{releaseName}.torrent",
+      "searchUrls": []
+    },
+    {
+      "id": "fuzer",
+      "name": "Fuzer",
+      "privacy": "private",
+      "urls": ["https://fuzer.xyz/"],
+      "fields": [
+        {
+          "name": "uid",
+          "label": "User ID",
+          "help": "Create rss link at https://www.fuzer.me/getrss.php and find at &u=11111",
+          "secret": true
+        },
+        {
+          "name": "passkey",
+          "label": "PassKey",
+          "help": "Create rss link at https://www.fuzer.me/getrss.php and find at &torrent_pass=...",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/attachment.php?attachmentid={id}",
+      "downloadUrl": "/rss/torrent.php/{id}/{uid}/{passkey}/{releaseName}.torrent",
+      "searchUrls": []
+    },
+    {
+      "id": "ggn",
+      "name": "GazelleGames",
+      "privacy": "private",
+      "urls": ["https://gazellegames.net/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        },
+        {
+          "name": "api_key",
+          "label": "API Key",
+          "help": "Username -> Edit / Settings -> API Keys",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "happyfappy",
+      "name": "HappyFappy",
+      "privacy": "private",
+      "urls": ["https://www.happyfappy.net/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "huno",
+      "name": "Hawke-UNO",
+      "privacy": "private",
+      "urls": ["https://hawke.uno/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to your profile, My Security / RSS Key (RID) and copy your Current RID",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "hdonly",
+      "name": "HD-Only",
+      "privacy": "private",
+      "urls": ["https://hd-only.org/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "hd-space",
+      "name": "HD-Space",
+      "privacy": "private",
+      "urls": ["https://hd-space.org/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to My Panel and then Change PID. It will show the PID, but don't click it!",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/index.php?page=torrent-details&id={id}",
+      "downloadUrl": "/download.php?id={id}&f={releaseName}.torrent&rsspid={rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "hdt",
+      "name": "HD-Torrents",
+      "privacy": "private",
+      "urls": ["https://hd-torrents.org/", "https://hdts.ru/"],
+      "fields": [
+        {
+          "name": "key",
+          "label": "RSS key",
+          "help": "Generate a RSS feed and copy key from URL",
+          "secret": true
+        },
+        {
+          "name": "token",
+          "label": "RSS Token",
+          "help": "Generate a RSS feed and copy token from URL",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/rss/?action=download&key={key}&token={token}&hash={id}&title={releaseName}",
+      "searchUrls": []
+    },
+    {
+      "id": "hdb",
+      "name": "HDBits",
+      "privacy": "private",
+      "urls": ["https://hdbits.org/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Copy the passkey from your profile page",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "hebits",
+      "name": "Hebits",
+      "privacy": "private",
+      "urls": ["https://hebits.net/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "PassKey",
+          "help": "Right click download on a torrent and get the passkey.",
+          "secret": true
+        },
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click download on a torrent and get the authkey.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "homiehelpdesk",
+      "name": "HomieHelpDesk",
+      "privacy": "private",
+      "urls": ["https://homiehelpdesk.net/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to My Settings > RSS Key, and copy your RSS Key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "immortalseed",
+      "name": "ImmortalSeed",
+      "privacy": "private",
+      "urls": ["https://immortalseed.me/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Go to https://immortalseed.me/getrss.php to get the RSS feed link and extract passkey from secret_key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?type=rss&secret_key={passkey}&id={id}",
+      "searchUrls": []
+    },
+    {
+      "id": "infinityhd",
+      "name": "InfinityHD",
+      "privacy": "private",
+      "urls": ["https://infinityhd.net/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to My Settings > Settings -> RSS Key, and copy your RSS Key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "insane",
+      "name": "iNSANE",
+      "privacy": "private",
+      "urls": ["https://newinsane.info/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Check in Settings (newinsane.info/settings.php) or RSS (newinsane.info/rss_list.php) to find your passkey.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php/{id}/{passkey}/[iNs-{id}][{category}]{releaseName}.torrent",
+      "searchUrls": []
+    },
+    {
+      "id": "ipt",
+      "name": "IPTorrents",
+      "privacy": "private",
+      "urls": [
+        "https://iptorrents.com/",
+        "https://iptorrents.me/",
+        "https://nemo.iptorrents.com/",
+        "https://ipt.getcrazy.me/",
+        "https://ipt.findnemo.net/",
+        "https://ipt.beelyrics.net/",
+        "https://ipt.venom.global/",
+        "https://ipt.workisboring.net/",
+        "https://ipt.lol/",
+        "https://ipt.cool/",
+        "https://ipt.world/"
+      ],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Copy the passkey from your details page.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php/{id}/{releaseName}.torrent?torrent_pass={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "itatorrents",
+      "name": "ItaTorrents",
+      "privacy": "private",
+      "urls": ["https://itatorrents.xyz/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to your profile tab, Settings > RSS Keys, copy RSS Key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "keepfrds",
+      "name": "KeepFRDS",
+      "privacy": "private",
+      "urls": ["https://pt.keepfrds.com/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Your passkey.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "locadora",
+      "name": "Locadora",
+      "privacy": "private",
+      "urls": ["https://locadora.cc/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to your profile tab, Settings > Security, copy RSS Key (RID)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "lst",
+      "name": "LST",
+      "privacy": "private",
+      "urls": ["https://lst.gg/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to your profile tab, Settings > Security, copy RSS Key (RID)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "luminarr",
+      "name": "Luminarr",
+      "privacy": "private",
+      "urls": ["https://luminarr.me/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to Settings > RSS Key, and copy your RSS Key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "materialize",
+      "name": "Materialize",
+      "privacy": "private",
+      "urls": ["https://materialize.is/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents?torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&authkey={authkey}&torrent_pass={torrent_pass}&id={id}",
+      "searchUrls": []
+    },
+    {
+      "id": "midnightscene",
+      "name": "MidnightScene",
+      "privacy": "private",
+      "urls": ["https://midnightscene.cc/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to My Settings > Settings -> RSS Key, and copy your RSS Key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "milkie",
+      "name": "Milkie",
+      "privacy": "private",
+      "urls": ["https://milkie.cc/"],
+      "fields": [
+        {
+          "name": "apikey",
+          "label": "Api key",
+          "help": "Go to your profile and copy your Api key from settings",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/browse/{id}",
+      "downloadUrl": "/api/v1/torrents/{id}/torrent?key={apikey}",
+      "searchUrls": []
+    },
+    {
+      "id": "myanonamouse",
+      "name": "MyAnonamouse",
+      "privacy": "private",
+      "urls": ["https://www.myanonamouse.net/"],
+      "fields": [
+        {
+          "name": "cookie",
+          "label": "Cookie (mam_id)",
+          "help": "Under your username, go to preferences then security and generate a session using the IP address Autobrr runs on. Changes monthly. Format mam_id=$ID;",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/t/{id}",
+      "downloadUrl": "/tor/download.php?tid={id}",
+      "searchUrls": []
+    },
+    {
+      "id": "ncore",
+      "name": "nCore",
+      "privacy": "private",
+      "urls": ["https://ncore.pro/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Check a torrent download link. key='value' is your passkey.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?action=details&id={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&key={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "nbl",
+      "name": "Nebulance",
+      "privacy": "private",
+      "urls": ["https://nebulance.io/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "norbits",
+      "name": "Norbits",
+      "privacy": "private",
+      "urls": ["https://www.norbits.net/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Copy passkey from a download link",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "nordicbytes",
+      "name": "NordicBytes",
+      "privacy": "private",
+      "urls": ["https://nordicbytes.org/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS Key",
+          "help": "Click the cog icon in the top right corner, RSS key is located in the sidebar.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "nordicquality",
+      "name": "NordicQuality",
+      "privacy": "private",
+      "urls": ["https://nordicq.org"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to your profile and under Settings > Security, copy your RSS Key (RID)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "nyaa",
+      "name": "Nyaa",
+      "privacy": "public",
+      "urls": ["https://nyaa.si/"],
+      "fields": [],
+      "infoUrl": "/view/{id}",
+      "downloadUrl": "/download/{id}.torrent",
+      "searchUrls": ["/?page=rss&c=1_0&f=0&q={query}"]
+    },
+    {
+      "id": "onlyencodes",
+      "name": "OnlyEncodes",
+      "privacy": "private",
+      "urls": ["https://onlyencodes.cc"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to your profile > Settings > Security > RSS Key (RID) and paste your RID into this field.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "ops",
+      "name": "Orpheus",
+      "privacy": "private",
+      "urls": ["https://orpheus.network/"],
+      "fields": [
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        },
+        {
+          "name": "api_key",
+          "label": "API Key",
+          "help": "Settings -> Access Settings -> API Keys - Create a new api token.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "ptp",
+      "name": "PassThePopcorn",
+      "privacy": "private",
+      "urls": ["https://passthepopcorn.me/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}&key={key}",
+      "searchUrls": []
+    },
+    {
+      "id": "peergarden",
+      "name": "PeerGarden",
+      "privacy": "private",
+      "urls": ["https://peergarden.org/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS Key",
+          "help": "Click the cog icon in the top right corner, RSS key is located in the sidebar.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "phoenixproject",
+      "name": "Phoenix Project",
+      "privacy": "private",
+      "urls": ["https://phoenixproject.app/"],
+      "fields": [
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "pixelhd",
+      "name": "PixelHD",
+      "privacy": "private",
+      "urls": ["https://pixelhd.me/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Your Authkey from your PixelHD profile or torrent download link.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Your Passkey (torrent_pass) from your PixelHD profile.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "polishtracker",
+      "name": "PolishTracker",
+      "privacy": "private",
+      "urls": ["https://pte.nu/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to your profile and copy your RSS key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/downrss/{rsskey}/{id}",
+      "searchUrls": []
+    },
+    {
+      "id": "pornbay",
+      "name": "Pornbay",
+      "privacy": "private",
+      "urls": ["https://pornbay.org/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "pretome",
+      "name": "PreToMe",
+      "privacy": "private",
+      "urls": ["https://pretome.info/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Copy your RSS key from the RSS feed",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php/{id}/{rsskey}/{releaseName}.torrent",
+      "searchUrls": []
+    },
+    {
+      "id": "pss",
+      "name": "PrivateSilverScreen",
+      "privacy": "private",
+      "urls": ["https://privatesilverscreen.cc/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to your profile > Settings > Security > RSS Key (RID) and paste your RID into this field.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "ptf",
+      "name": "PTFiles",
+      "privacy": "private",
+      "urls": ["https://ptfiles.net/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Pass key",
+          "help": "Grab your passkey from your RSS feed.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/dl.php/{id}/{passkey}/{releaseName}.torrent",
+      "searchUrls": []
+    },
+    {
+      "id": "pussytorrents",
+      "name": "PussyTorrents",
+      "privacy": "private",
+      "urls": ["https://pussytorrents.org/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Copy your RSS key from the RSS feed",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrent/{id}",
+      "downloadUrl": "/rss/download/{id}/{rsskey}/{releaseName}.torrent",
+      "searchUrls": []
+    },
+    {
+      "id": "rastastugan",
+      "name": "Rastastugan",
+      "privacy": "private",
+      "urls": ["https://rastastugan.org/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS Key",
+          "help": "Go to My Settings > RSS Key, and copy your RSS Key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "redacted",
+      "name": "Redacted",
+      "privacy": "private",
+      "urls": ["https://redacted.sh/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        },
+        {
+          "name": "api_key",
+          "label": "API Key",
+          "help": "Settings -> Account Settings -> API Keys - Generate new api keys. Scope (User, Torrents)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "rfx",
+      "name": "ReelFliX",
+      "privacy": "private",
+      "urls": ["https://reelflix.cc/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to your profile > Settings > Security > RSS Key (RID) and paste your current RID into this field.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "rmc",
+      "name": "Retro Movies Club",
+      "privacy": "private",
+      "urls": ["https://retro-movies.club"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to your profile > Settings > Security > RSS Key (RID) and paste your RID into this field.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "retroflix",
+      "name": "RetroFlix",
+      "privacy": "private",
+      "urls": ["https://retroflix.club/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Go to User CP, User CP Home and copy the passkey",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/browse/t/{id}/{releaseName}",
+      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "retrotoonworld",
+      "name": "RetroToon World",
+      "privacy": "private",
+      "urls": ["https://retrotoon.world/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Copy your passkey from your profile and paste it in the field below.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?id={id}&torrent_pass={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "revolutiontt",
+      "name": "RevolutionTT",
+      "privacy": "private",
+      "urls": ["https://revott.me/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Copy the passkey from a download link",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php/{id}/{releaseName}.torrent?passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "rocket-hd",
+      "name": "RocketHD",
+      "privacy": "private",
+      "urls": ["https://rocket-hd.cc/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Your profile > Settings > RSS Key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "romanianmetaltorrents",
+      "name": "Romanian Metal Torrents",
+      "privacy": "private",
+      "urls": ["https://metal.iplay.ro/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Go to your profile and copy your passkey",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php/{id}/{releaseName}.torrent?passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "samaritano",
+      "name": "Samaritano",
+      "privacy": "private",
+      "urls": ["https://samaritano.cc/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to My Settings > Settings -> RSS Key, and copy your RSS Key (RID)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "satclubbing",
+      "name": "SATClubbing",
+      "privacy": "private",
+      "urls": ["https://satclubbing.club/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "PassKey",
+          "help": "Copy the passkey from your profile",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?id={id}&name={encodedName}&passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "scenehd",
+      "name": "SceneHD",
+      "privacy": "private",
+      "urls": ["https://scenehd.org/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Go to https://scenehd.org/getrss.php and extract your Passkey",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "seedcore",
+      "name": "SeedCore",
+      "privacy": "private",
+      "urls": ["https://seedcore.net"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to My Settings > Settings -> RSS Key, and copy your RSS Key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "seedpool",
+      "name": "SeedPool",
+      "privacy": "private",
+      "urls": ["https://seedpool.org/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to Settings > RSS Keys and then copy RSS Key (RID)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "seedpool_music",
+      "name": "SeedPool (Music)",
+      "privacy": "private",
+      "urls": ["https://seedpool.org/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to Settings > RSS Keys and then copy RSS Key (RID)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "shareisland",
+      "name": "ShareIsland",
+      "privacy": "private",
+      "urls": ["https://shareisland.org"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to your profile tab, Settings > RSS Key, copy RSS Key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "sharewood",
+      "name": "Sharewood",
+      "privacy": "private",
+      "urls": ["https://www.sharewood.tv/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Go to My Profile, then click on Show Passkey",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{torrentSlug}.{id}",
+      "downloadUrl": "/api/{passkey}/{id}/download",
+      "searchUrls": []
+    },
+    {
+      "id": "simurg",
+      "name": "Simurg",
+      "privacy": "private",
+      "urls": ["https://simurg.world/"],
+      "fields": [
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click a torrent's download link and copy the torrent_pass value.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "stc",
+      "name": "SkipTheCommercials",
+      "privacy": "private",
+      "urls": ["https://skipthecommercials.xyz/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to your profile tab, Settings > Security, copy RSS Key (RID)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "speedapp",
+      "name": "SpeedApp",
+      "privacy": "private",
+      "urls": ["https://speedapp.io/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "PassKey",
+          "help": "Copy the passkey from your profile",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/browse/{id}/t/{releaseName}",
+      "downloadUrl": "/rss/download/{id}/{releaseName}.torrent?passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "subsplease",
+      "name": "SubsPlease",
+      "privacy": "public",
+      "urls": ["https://nyaa.si/"],
+      "fields": [],
+      "infoUrl": "{infoUrl}",
+      "downloadUrl": "{torrentUrl}",
+      "searchUrls": []
+    },
+    {
+      "id": "sugoimusic",
+      "name": "SugoiMusic",
+      "privacy": "private",
+      "urls": ["https://sugoimusic.me/"],
+      "fields": [
+        {
+          "name": "authkey",
+          "label": "Auth key",
+          "help": "Right click DL on a torrent and get the authkey.",
+          "secret": true
+        },
+        {
+          "name": "torrent_pass",
+          "label": "Torrent pass",
+          "help": "Right click DL on a torrent and get the torrent_pass.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents.php?id={groupId}&torrentid={id}",
+      "downloadUrl": "/torrents.php?action=download&id={id}&authkey={authkey}&torrent_pass={torrent_pass}",
+      "searchUrls": []
+    },
+    {
+      "id": "superbits",
+      "name": "SuperBits",
+      "privacy": "private",
+      "urls": ["https://superbits.org/", "https://login.superbits.org/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Copy the passkey from the /rss page.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrent/{id}/",
+      "downloadUrl": "/download.php?id={id}&passkey={passkey}",
+      "searchUrls": [
+        "/search?search={query}",
+        "/api/v1/torrents?extendedSearch=false&freeleech=false&index=0&limit=50&order=asc&page=search&searchText={query}&section=all&sort=n"
+      ]
+    },
+    {
+      "id": "t66y",
+      "name": "T66y",
+      "privacy": "public",
+      "urls": ["https://t66y.com/"],
+      "fields": [],
+      "infoUrl": "",
+      "downloadUrl": "",
+      "searchUrls": []
+    },
+    {
+      "id": "tdc",
+      "name": "TheDarkCommunity",
+      "privacy": "private",
+      "urls": ["https://thedarkcommunity.cc/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to your profile tab, Settings > Security, copy RSS Key (RID)",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "torrentbytes",
+      "name": "TorrentBytes",
+      "privacy": "private",
+      "urls": ["https://torrentbytes.net/"],
+      "fields": [
+        {
+          "name": "cookie",
+          "label": "Cookie",
+          "help": "Check how to get cookies in your browser and find the uid and pass cookies. Example: uid=1234; pass=asdf12347asdf13",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?id={id}&name={releaseName}.torrent",
+      "searchUrls": []
+    },
+    {
+      "id": "torrentday",
+      "name": "TorrentDay",
+      "privacy": "private",
+      "urls": [
+        "https://www.torrentday.com/",
+        "https://tday.love/",
+        "https://secure.torrentday.com/",
+        "https://classic.torrentday.com/",
+        "https://torrentday.it/",
+        "https://td.findnemo.net/",
+        "https://td.getcrazy.me/",
+        "https://td.venom.global/",
+        "https://td.workisboring.net/"
+      ],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Create a RSS Link to find out your PASSKEY",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php/{id}/{releaseName}.torrent?torrent_pass={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "torrentleech",
+      "name": "TorrentLeech",
+      "privacy": "private",
+      "urls": [
+        "https://www.torrentleech.org/",
+        "https://www.torrentleech.cc/",
+        "https://www.torrentleech.me/",
+        "https://www.tleechreload.org/",
+        "https://www.tlgetin.cc/"
+      ],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to your profile and copy your RSS key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrent/{id}",
+      "downloadUrl": "/rss/download/{id}/{rsskey}/{releaseName}.torrent",
+      "searchUrls": []
+    },
+    {
+      "id": "torrentnetwork",
+      "name": "TorrentNetwork",
+      "privacy": "private",
+      "urls": ["https://tntracker.org/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "PassKey",
+          "help": "Home -> RSS -> Extract PassKey from URL",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrent/{id}",
+      "downloadUrl": "/download/{id}/{passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "tsyndikat",
+      "name": "TorrentSyndikat",
+      "privacy": "private",
+      "urls": ["https://torrent-syndikat.org/"],
+      "fields": [
+        {
+          "name": "api_key",
+          "label": "Api-Key",
+          "help": "Generate an apikey with download scope and copy it. Profileinstellungen -> API-Keys -> API-Key erzeugen",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?id={id}&apikey={api_key}",
+      "searchUrls": []
+    },
+    {
+      "id": "trancetraffic",
+      "name": "TranceTraffic",
+      "privacy": "private",
+      "urls": ["https://trancetraffic.com/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Passkey",
+          "help": "Go to https://www.trancetraffic.com/links.php, click on RSS Feed and copy your passkey from the url.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php/{id}/{releaseName}.torrent?passkey={passkey}",
+      "searchUrls": []
+    },
+    {
+      "id": "ulcx",
+      "name": "Upload.cx",
+      "privacy": "private",
+      "urls": ["https://upload.cx/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key (RID)",
+          "help": "Go to your profile > Settings > Security > RSS Key (RID) and paste your RID into this field.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/torrents/{id}",
+      "downloadUrl": "/torrent/download/{id}.{rsskey}",
+      "searchUrls": []
+    },
+    {
+      "id": "xspeeds",
+      "name": "XSpeeds",
+      "privacy": "private",
+      "urls": ["https://xspeeds.eu/"],
+      "fields": [
+        {
+          "name": "passkey",
+          "label": "Secret key",
+          "help": "Go to https://www.xspeeds.eu/getrss.php and select Feed Type: Download Link, then Generate Feed. Copy the VALUE between secret_key=VALUE&feedtype.",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?type=rss&secret_key={passkey}&id={id}",
+      "searchUrls": []
+    },
+    {
+      "id": "xwtorrents",
+      "name": "XtremeWrestlingTorrents",
+      "privacy": "private",
+      "urls": ["https://xtremewrestlingtorrents.net/"],
+      "fields": [
+        {
+          "name": "rsskey",
+          "label": "RSS key",
+          "help": "Go to your profile and copy your RSS key",
+          "secret": true
+        }
+      ],
+      "infoUrl": "/details.php?id={id}",
+      "downloadUrl": "/download.php?id={id}&name={releaseName}.torrent&{rsskey}",
+      "searchUrls": []
+    }
+  ]
+}

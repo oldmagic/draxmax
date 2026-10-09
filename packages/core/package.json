@@ -1,0 +1,21 @@
+{
+  "name": "@draxmax/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@draxmax/shared": "workspace:*",
+    "magnet-uri": "^7.0.10",
+    "parse-torrent": "^11.0.24",
+    "rss-parser": "^3.13.0",
+    "webtorrent": "^3.0.21",
+    "zod": "^4.6.5"
+  }
+}
