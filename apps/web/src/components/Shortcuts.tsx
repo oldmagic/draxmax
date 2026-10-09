@@ -9,6 +9,7 @@ const GO: Record<string, string> = {
   u: '/upcoming',
   r: '/rss',
   i: '/sites',
+  n: '/notifications',
   s: '/stats',
   ',': '/settings',
 };
@@ -29,7 +30,12 @@ export function Shortcuts() {
         )
       )
         return;
-      if (e.key === '?') {
+      // "g" then a key navigates; checked first so "g n" isn't taken by "n" (add).
+      if (Date.now() - pendingG < 1200 && GO[e.key]) {
+        e.preventDefault();
+        navigate(GO[e.key]!);
+        pendingG = 0;
+      } else if (e.key === '?') {
         e.preventDefault();
         openShortcuts();
       } else if (e.key === 'n') {
@@ -37,9 +43,6 @@ export function Shortcuts() {
         openAdd();
       } else if (e.key === 'g') {
         pendingG = Date.now();
-      } else if (Date.now() - pendingG < 1200 && GO[e.key]) {
-        navigate(GO[e.key]!);
-        pendingG = 0;
       }
     };
     window.addEventListener('keydown', onKey);

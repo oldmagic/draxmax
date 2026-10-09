@@ -585,4 +585,57 @@ describe('security', () => {
     const presets = (await app.inject('/api/sites/presets')).json() as { id: string }[];
     expect(presets.some((p) => p.id === 'superbits')).toBe(true);
   });
+
+  it('records security events and serves the notification history', async () => {
+    expect((await app.inject({ url: '/api/notifications', ...REMOTE })).statusCode).toBe(401);
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/setup',
+      payload: { username: 'me', password: 'correct horse' },
+    });
+    for (let i = 0; i < 3; i++)
+      await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        payload: { username: 'me', password: 'wrong password' },
+        ...REMOTE,
+      });
+    const ok = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'me', password: 'correct horse' },
+      ...REMOTE,
+    });
+    // The login response itself says "signed in", so the UI can leave the login screen.
+    expect(ok.json()).toMatchObject({ authenticated: true });
+    const cookie = cookieOf(ok);
+    const list = await app.inject({
+      url: '/api/notifications?category=security',
+      headers: { cookie },
+      ...REMOTE,
+    });
+    const items = list.json().items as { title: string; count: number; id: number }[];
+    expect(items.map((i) => i.title)).toEqual([
+      'Signed in from 10.1.2.3',
+      'Failed login for “me” from 10.1.2.3',
+      'Web UI login created',
+    ]);
+    expect(items[1]!.count).toBe(3);
+    expect(list.body).not.toMatch(/wrong password|correct horse/);
+
+    const read = await app.inject({
+      method: 'POST',
+      url: '/api/notifications/read',
+      payload: { all: true, read: true },
+      headers: { cookie, origin: 'http://localhost:80', host: 'localhost:80' },
+      ...REMOTE,
+    });
+    expect(read.json().unread).toBe(0);
+    const count = await app.inject({
+      url: '/api/notifications/count',
+      headers: { cookie },
+      ...REMOTE,
+    });
+    expect(count.json()).toEqual({ unread: 0 });
+  });
 });

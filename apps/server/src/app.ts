@@ -13,6 +13,7 @@ import { rssRoutes } from './routes/rss.ts';
 import { mediaRoutes } from './routes/media.ts';
 import { settingsRoutes, type IdentityOptions } from './routes/settings.ts';
 import { siteRoutes } from './routes/sites.ts';
+import { notificationRoutes } from './routes/notifications.ts';
 import { torrentRoutes } from './routes/torrents.ts';
 
 export interface ServerOptions {
@@ -149,6 +150,8 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       const allowedHosts = [req.headers.host, req.headers['x-forwarded-host']]
         .flatMap((h) => (typeof h === 'string' ? h.split(',') : []))
         .map((h) => h.trim().toLowerCase())
+        // Origin omits default ports ("http://host"), a Host header may not ("host:80").
+        .map((h) => h.replace(/:(80|443)$/, ''))
         .filter(Boolean);
       // Sec-Fetch-Site isn't usable for WebSockets: Chrome reports ws:// as cross-site even
       // for the page's own server (ws vs http scheme). Origin is checked for those instead.
@@ -238,6 +241,9 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     core.events.on('upcoming:updated', () => hub.broadcast({ type: 'upcoming:updated' })),
     core.events.on('missing:updated', () => hub.broadcast({ type: 'missing:updated' })),
     core.events.on('sites:updated', () => hub.broadcast({ type: 'sites:updated' })),
+    core.events.on('notifications:updated', (e) =>
+      hub.broadcast({ type: 'notifications:updated', unread: e.unread, item: e.item }),
+    ),
   ];
   const timer = setInterval(() => {
     if (clients.size > 0) hub.broadcast(snapshot());
@@ -265,6 +271,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   await app.register(mediaRoutes, { core });
   await app.register(fsRoutes, { core });
   await app.register(siteRoutes, { core });
+  await app.register(notificationRoutes, { core });
 
   app.all('/api/*', async (_req, reply) => reply.status(404).send({ error: 'Not found' }));
 

@@ -43,7 +43,13 @@ export interface TorrentManagerDeps {
   settings: () => Settings;
 }
 
+/** Where a torrent came from (shown in the notification history). */
+export type AddOrigin = 'manual' | 'rss' | 'missing' | 'watch' | 'api';
+
 export interface AddOptions {
+  /** Who added it, and for RSS / missing episodes the rule name. */
+  origin?: AddOrigin | undefined;
+  originDetail?: string | undefined;
   savePath?: string | undefined;
   paused?: boolean | undefined;
   category?: string | undefined;
@@ -104,6 +110,7 @@ export class TorrentManager {
     const src = parseMagnet(magnetURI);
     return this.addRecord(
       this.newRecord(src.infoHash, src.name ?? src.infoHash, opts, src.announce, { magnetURI }),
+      opts,
     );
   }
 
@@ -117,6 +124,7 @@ export class TorrentManager {
         files: src.files.map((f) => ({ ...f, downloaded: 0 })),
         filePriorities: src.files.map(() => DEFAULT_PRIORITY),
       }),
+      opts,
     );
   }
 
@@ -423,7 +431,7 @@ export class TorrentManager {
     };
   }
 
-  private addRecord(record: TorrentRecord): TorrentItem {
+  private addRecord(record: TorrentRecord, opts: AddOptions = {}): TorrentItem {
     for (const e of this.entries.values()) {
       if (e.record.infoHash === record.infoHash) {
         throw new CoreError('conflict', `"${e.record.name}" is already in the list`);
@@ -434,7 +442,10 @@ export class TorrentManager {
     this.deps.repo.save(record);
     this.schedule();
     const item = this.toItem(entry);
-    this.deps.events.emit('torrent:added', item);
+    this.deps.events.emit('torrent:added', item, {
+      origin: opts.origin ?? 'api',
+      detail: opts.originDetail ?? null,
+    });
     return item;
   }
 

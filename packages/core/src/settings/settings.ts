@@ -111,6 +111,13 @@ export const settingsSchema = z
     notifyOnComplete: z.boolean().default(true),
     notifyOnError: z.boolean().default(true),
     notifyOnRssMatch: z.boolean().default(true),
+    /** Notification history: how long entries are kept, and which kinds are recorded. */
+    notificationRetentionDays: z.number().int().min(1).max(3650).default(90),
+    historyDownload: z.boolean().default(true),
+    historyRss: z.boolean().default(true),
+    historyUpcoming: z.boolean().default(true),
+    historySecurity: z.boolean().default(true),
+    historySystem: z.boolean().default(true),
     // Desktop only.
     closeToTray: z.boolean().default(true),
     startOnLogin: z.boolean().default(false),

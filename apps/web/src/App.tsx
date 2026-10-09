@@ -17,6 +17,7 @@ import { AuthScreen } from '@/pages/Auth';
 import { DownloadsPage } from '@/pages/Downloads';
 import { RssPage } from '@/pages/Rss';
 import { SitesPage } from '@/pages/Sites';
+import { NotificationsPage } from '@/pages/Notifications';
 import { SettingsPage } from '@/pages/Settings';
 import { StatsPage } from '@/pages/Stats';
 import { UpcomingPage } from '@/pages/Upcoming';
@@ -92,6 +93,7 @@ function Shell() {
                   <Route path="/upcoming" component={UpcomingPage} />
                   <Route path="/rss" component={RssPage} />
                   <Route path="/sites" component={SitesPage} />
+                  <Route path="/notifications" component={NotificationsPage} />
                   <Route path="/stats" component={StatsPage} />
                   <Route path="/settings" component={SettingsPage} />
                   <Route>

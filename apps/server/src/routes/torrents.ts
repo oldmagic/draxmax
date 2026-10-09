@@ -26,12 +26,16 @@ export async function torrentRoutes(app: FastifyInstance, { core }: { core: Core
 
   app.post('/api/torrents/magnet', async (req, reply) => {
     const body = addMagnetSchema.parse(req.body);
-    return reply.status(201).send(t.addMagnet(body.magnetURI, body));
+    return reply.status(201).send(t.addMagnet(body.magnetURI, { ...body, origin: 'manual' }));
   });
 
   app.post('/api/torrents/file', async (req, reply) => {
     const body = addTorrentFileSchema.parse(req.body);
-    return reply.status(201).send(await t.addTorrentFile(Buffer.from(body.data, 'base64'), body));
+    return reply
+      .status(201)
+      .send(
+        await t.addTorrentFile(Buffer.from(body.data, 'base64'), { ...body, origin: 'manual' }),
+      );
   });
 
   app.post('/api/torrents/pause-all', async (_req, reply) => {

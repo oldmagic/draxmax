@@ -1,6 +1,8 @@
-import { Activity, CalendarClock, Download, Globe, Rss, Settings } from 'lucide-react';
+import { Activity, Bell, CalendarClock, Download, Globe, Rss, Settings } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Link, useLocation } from 'wouter';
+import { NotificationBell, UnreadBadge } from '@/components/NotificationBell';
+import { useUnreadCount } from '@/lib/notifications';
 import { cn } from '@/lib/utils';
 import { formatSpeed } from '@/lib/format';
 import { useTorrents } from '@/stores/torrents';
@@ -10,6 +12,7 @@ const NAV = [
   { href: '/upcoming', label: 'Upcoming', icon: CalendarClock },
   { href: '/rss', label: 'RSS', icon: Rss },
   { href: '/sites', label: 'Sites', icon: Globe },
+  { href: '/notifications', label: 'Notifications', icon: Bell },
   { href: '/stats', label: 'Stats', icon: Activity },
   { href: '/settings', label: 'Settings', icon: Settings },
 ] as const;
@@ -21,12 +24,14 @@ export function Sidebar() {
   const down = torrents.reduce((s, t) => s + t.downloadSpeed, 0);
   const up = torrents.reduce((s, t) => s + t.uploadSpeed, 0);
   const active = torrents.filter((t) => t.status === 'downloading').length;
+  const unread = useUnreadCount();
 
   return (
     <aside className="glass m-3 mr-0 hidden w-60 shrink-0 flex-col rounded-2xl p-3 md:flex">
       <div className="flex items-center gap-2.5 px-2 pb-6 pt-2">
         <img src="/favicon.svg" alt="" className="size-8" />
         <span className="text-lg font-semibold tracking-tight">DraxMax</span>
+        <NotificationBell />
       </div>
 
       <nav aria-label="Main" className="flex flex-col gap-1">
@@ -51,6 +56,9 @@ export function Sidebar() {
               )}
               <Icon className={cn('relative size-[18px]', current && 'text-accent')} />
               <span className="relative">{label}</span>
+              {href === '/notifications' && (
+                <UnreadBadge count={unread} className="relative ml-auto" />
+              )}
               {href === '/downloads' && active > 0 && (
                 <span className="relative ml-auto rounded-full bg-accent/15 px-1.5 text-xs text-accent tabular">
                   {active}
@@ -99,6 +107,7 @@ export function Sidebar() {
 /** Bottom navigation for narrow windows. */
 export function MobileNav() {
   const [location] = useLocation();
+  const unread = useUnreadCount();
   return (
     <nav
       aria-label="Main"
@@ -113,11 +122,14 @@ export function MobileNav() {
             aria-label={label}
             aria-current={current ? 'page' : undefined}
             className={cn(
-              'rounded-xl p-2.5',
+              'relative rounded-xl p-2.5',
               current ? 'bg-surface-hover text-accent' : 'text-muted',
             )}
           >
             <Icon className="size-5" />
+            {href === '/notifications' && (
+              <UnreadBadge count={unread} className="absolute right-0.5 top-0.5" />
+            )}
           </Link>
         );
       })}

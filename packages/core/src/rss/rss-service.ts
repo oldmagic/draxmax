@@ -197,6 +197,13 @@ export class RssService {
       if (parsed.title && (feed.title === new URL(feed.url).host || !feed.lastFetched))
         feed.title = parsed.title.slice(0, 200);
       feed.lastFetched = new Date().toISOString();
+      if (feed.failures > 0)
+        this.deps.events.emit('rss:feed-status', {
+          feedId: id,
+          title: feed.title,
+          ok: true,
+          error: null,
+        });
       feed.lastError = null;
       feed.failures = 0;
       feed.nextFetchAt = new Date(Date.now() + intervalMs).toISOString();
@@ -205,6 +212,14 @@ export class RssService {
     } catch (err) {
       feed.failures += 1;
       feed.lastError = (err as Error).message;
+      // Report the change from working to failing once, not every retry.
+      if (feed.failures === 1)
+        this.deps.events.emit('rss:feed-status', {
+          feedId: id,
+          title: feed.title,
+          ok: false,
+          error: feed.lastError,
+        });
       const backoff = Math.min(MAX_BACKOFF_MS, intervalMs * 2 ** Math.min(feed.failures - 1, 6));
       feed.nextFetchAt = new Date(Date.now() + backoff).toISOString();
       this.repo.saveFeed(feed);
@@ -242,7 +257,11 @@ export class RssService {
     if (!article) throw new CoreError('not_found', 'Article not found');
     if (!article.torrentURL)
       throw new CoreError('invalid_input', 'This article has no torrent or magnet link');
-    const res = await this.addTorrent(article.torrentURL, {}, feedId);
+    const res = await this.addTorrent(
+      article.torrentURL,
+      { origin: 'manual', originDetail: 'RSS article' },
+      feedId,
+    );
     this.repo.recordDownload({
       ruleId: null,
       ruleName: null,
@@ -598,6 +617,8 @@ export class RssService {
       const res = await this.addTorrent(
         article.torrentURL,
         {
+          origin: 'rss',
+          originDetail: rule.name,
           category: rule.category,
           tags: rule.tags,
           savePath: rule.savePath,
