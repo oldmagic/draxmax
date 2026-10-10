@@ -25,6 +25,14 @@ export const settingsSchema = z
     maxActiveDownloads: z.number().int().min(0).max(1000).default(5),
     /** Remove a torrent from the list (files kept) after seeding this long. 0 = seed forever. */
     seedTimeLimitMinutes: z.number().int().min(0).max(525_600).default(0),
+    /** Stop seeding once uploaded / size reaches this. 0 = no ratio limit. */
+    seedRatioLimit: z.number().min(0).max(10_000).default(0),
+    /** What reaching a seeding limit does: drop the torrent from the list, or just stop it. */
+    seedLimitAction: z.enum(['remove', 'pause']).default('remove'),
+    /** Unfinished downloads live here and move to their save folder when done. Empty = off. */
+    incompletePath: z.string().trim().max(4096).default(''),
+    /** Downloads stop when their drive has less free space than this (MB). 0 = never. */
+    minFreeSpaceMb: z.number().int().min(0).max(10_000_000).default(512),
     /**
      * OS user/group DraxMax runs as and owns its files as (name or numeric id; '' = default).
      * Applied at startup by the Docker entrypoint, or when started as root.
@@ -54,6 +62,18 @@ export const settingsSchema = z
     /** Bytes/s; -1 = unlimited. */
     downloadLimit: z.number().int().min(-1).default(-1),
     uploadLimit: z.number().int().min(-1).default(-1),
+    /** Scheduled limits: used instead of the two above between `altSpeedFrom` and `altSpeedTo`. */
+    altSpeedEnabled: z.boolean().default(false),
+    altDownloadLimit: z.number().int().min(-1).default(-1),
+    altUploadLimit: z.number().int().min(-1).default(-1),
+    altSpeedFrom: z
+      .string()
+      .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM')
+      .default('08:00'),
+    altSpeedTo: z
+      .string()
+      .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM')
+      .default('23:00'),
 
     // --- Trackers ----------------------------------------------------------
     defaultTrackers: z.array(trackerUrl).max(500).default(PUBLIC_TRACKERS),
@@ -78,6 +98,11 @@ export const settingsSchema = z
     missingMinSeeders: z.number().int().min(0).max(1000).default(1),
     /** Cap on torrents added by one run, so a big backlog arrives in batches. */
     missingMaxPerRun: z.number().int().min(1).max(500).default(25),
+    /**
+     * A rule folder without episodes: `wait` until the first one arrives by RSS, or
+     * `download` the season from episode 1.
+     */
+    missingWhenEmpty: z.enum(['wait', 'download']).default('wait'),
 
     // --- Media intelligence ------------------------------------------------
     tmdbApiKey: z.string().trim().max(512).default(''),
@@ -111,6 +136,16 @@ export const settingsSchema = z
     notifyOnComplete: z.boolean().default(true),
     notifyOnError: z.boolean().default(true),
     notifyOnRssMatch: z.boolean().default(true),
+    /**
+     * Where the notifications above are also sent (ntfy, Discord, Telegram, or any URL that
+     * takes a JSON POST). Empty = nowhere.
+     */
+    notifyWebhookUrl: z
+      .string()
+      .trim()
+      .max(2048)
+      .refine((s) => s === '' || /^https?:\/\/\S+$/.test(s), 'Must be an http(s) URL')
+      .default(''),
     /** Notification history: how long entries are kept, and which kinds are recorded. */
     notificationRetentionDays: z.number().int().min(1).max(3650).default(90),
     historyDownload: z.boolean().default(true),
@@ -146,7 +181,12 @@ export const RESTART_KEYS: SettingsKey[] = [
 ];
 
 /** Values encrypted at rest in settings.json and never returned by the API. */
-export const SECRET_KEYS = ['tmdbApiKey', 'anilistToken', 'torznabUrls'] as const;
+export const SECRET_KEYS = [
+  'tmdbApiKey',
+  'anilistToken',
+  'torznabUrls',
+  'notifyWebhookUrl',
+] as const;
 export type SecretKey = (typeof SECRET_KEYS)[number];
 
 /** The DHT port actually used, applying the `torrentPort + 1` default. */
@@ -182,6 +222,12 @@ const ENV_MAP: Record<string, { key: SettingsKey; kind: Kind }> = {
   MISSING_USE_ANIMETOSHO: { key: 'missingUseAnimeTosho', kind: 'bool' },
   MISSING_MIN_SEEDERS: { key: 'missingMinSeeders', kind: 'int' },
   MISSING_MAX_PER_RUN: { key: 'missingMaxPerRun', kind: 'int' },
+  MISSING_WHEN_EMPTY: { key: 'missingWhenEmpty', kind: 'string' },
+  INCOMPLETE_PATH: { key: 'incompletePath', kind: 'string' },
+  MIN_FREE_SPACE_MB: { key: 'minFreeSpaceMb', kind: 'int' },
+  SEED_TIME_LIMIT_MINUTES: { key: 'seedTimeLimitMinutes', kind: 'int' },
+  SEED_LIMIT_ACTION: { key: 'seedLimitAction', kind: 'string' },
+  NOTIFY_WEBHOOK_URL: { key: 'notifyWebhookUrl', kind: 'string' },
   TORZNAB_URLS: { key: 'torznabUrls', kind: 'string' },
   TMDB_API_KEY: { key: 'tmdbApiKey', kind: 'string' },
   ANILIST_ENABLED: { key: 'anilistEnabled', kind: 'bool' },

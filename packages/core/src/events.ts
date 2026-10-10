@@ -6,8 +6,8 @@ export interface CoreEventMap {
   'torrent:added': [TorrentItem, { origin: string; detail: string | null }];
   'torrent:removed': [string];
   'torrent:done': [TorrentItem];
-  /** Removed from the list after reaching the seeding time limit. */
-  'torrent:seeded': [TorrentItem];
+  /** Reached a seeding limit: stopped, or removed from the list. */
+  'torrent:seeded': [TorrentItem, { removed: boolean }];
   'torrent:error': [TorrentItem];
   /** The BitTorrent engine died (e.g. port in use). The host should report and restart. */
   'engine:fatal': [Error];

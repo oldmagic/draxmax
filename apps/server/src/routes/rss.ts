@@ -28,6 +28,11 @@ export async function rssRoutes(app: FastifyInstance, { core }: { core: Core }):
 
   app.get('/api/rss/feeds', async () => rss.feeds());
 
+  // "Follow this show": a prefilled rule for a release name, for the user to check and save.
+  app.post('/api/rss/rules/suggest', async (req) =>
+    rss.suggestRule(z.object({ title: z.string().trim().min(1).max(512) }).parse(req.body).title),
+  );
+
   // Missing episodes: GET the status; POST checks everything now (or `ruleIds` only).
   app.get('/api/missing', async () => core.missing.get());
   app.post('/api/missing/check', async (req) => {

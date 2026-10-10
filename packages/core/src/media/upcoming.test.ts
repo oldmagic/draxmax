@@ -1,10 +1,24 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCore, type Core } from '../core.ts';
 import { FakeEngine } from '../testing/index.ts';
+import { httpTransport } from '../net/http.ts';
 import { proximityScore } from './upcoming.ts';
+
+/** Serves the HTTP helper from a fetch-style stub instead of the network. */
+function useFetchStub(stub: typeof fetch): void {
+  vi.spyOn(httpTransport, 'request').mockImplementation(async (target, _addrs, req) => {
+    const res = await stub(target, { method: req.method, headers: req.headers, body: req.body });
+    return {
+      status: res.status,
+      headers: Object.fromEntries(res.headers),
+      body: Readable.from([Buffer.from(await res.arrayBuffer())]),
+    };
+  });
+}
 
 const day = (offset: number) =>
   new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
@@ -126,7 +140,7 @@ let core: Core;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'draxmax-upcoming-'));
-  vi.stubGlobal('fetch', fakeFetch());
+  useFetchStub(fakeFetch());
   core = createCore({
     configPath: join(dir, 'c'),
     downloadPath: join(dir, 'd'),
@@ -141,7 +155,7 @@ beforeEach(() => {
   );
 });
 afterEach(async () => {
-  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   await core.shutdown();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -197,7 +211,7 @@ describe('UpcomingService', () => {
   });
 
   it('works with AniList only (no TMDB key) and reports source errors', async () => {
-    vi.stubGlobal('fetch', (async (input: string | URL) => {
+    useFetchStub((async (input: string | URL) => {
       if (String(input).includes('anilist')) return new Response('down', { status: 500 });
       return new Response('{}', { status: 404 });
     }) as typeof fetch);

@@ -1,3 +1,4 @@
+import type { ContentType } from '@draxmax/shared';
 import { fetchBytes } from '../net/http.ts';
 import { parseFeed } from '../rss/feed-parser.ts';
 
@@ -9,13 +10,33 @@ export interface SearchResult {
   seeders: number | null;
   size: number | null;
   source: string;
+  /** Download category the source wants for its torrents (a site's own). */
+  category?: string;
 }
 
 export interface SearchSource {
   name: string;
   /** Anime-only indexers are skipped for live-action shows. */
   animeOnly: boolean;
+  /** Kinds of content the source carries; empty or absent = everything. */
+  types?: ContentType[];
   search(query: string): Promise<SearchResult[]>;
+}
+
+/**
+ * Should `source` be asked about this kind of content? `null` means the kind isn't known
+ * (e.g. a free-text search), which only rules out nothing.
+ */
+export function sourceCarries(source: SearchSource, kind: ContentType | null): boolean {
+  if (kind === null) return true;
+  if (source.animeOnly && kind !== 'anime') return false;
+  return !source.types?.length || source.types.includes(kind);
+}
+
+/** A Torznab endpoint as shown to users: host and path, never its API key. */
+export function torznabLabel(endpoint: string): string {
+  const u = new URL(endpoint);
+  return `${u.host}${u.pathname.replace(/\/api\/?$/, '').replace(/\/$/, '')}`;
 }
 
 export type FetchText = (url: string, accept: string) => Promise<string>;
@@ -127,7 +148,7 @@ export function torznabSource(
   intervalMs = 2_000,
 ): SearchSource {
   const base = new URL(endpoint);
-  const name = `Torznab: ${base.host}${base.pathname.replace(/\/api\/?$/, '').replace(/\/$/, '')}`;
+  const name = `Torznab: ${torznabLabel(endpoint)}`;
   return {
     name,
     animeOnly: false,

@@ -80,12 +80,24 @@ export function MissingTab() {
       </div>
       <p className="border-b px-4 py-2 text-xs text-muted">
         Each enabled rule with a save folder is compared with what its search finds on{' '}
-        {data?.sources.length ? data.sources.join(', ') : 'no sources (enable one in Settings)'}.
-        Released episodes after the first one you have are added automatically.{' '}
+        {data?.sources.length ? data.sources.join(', ') : 'no sources (add one under Sites)'}.
+        Released episodes after the first one you have are added automatically; a folder without
+        episodes{' '}
+        {data?.whenEmpty === 'download'
+          ? 'is filled from episode 1'
+          : 'waits for its first one from RSS'}{' '}
+        (change it in Settings → RSS, or per rule).{' '}
         {data && (
           <>
             {count('missing') ?? 0} with missing episodes · {count('ok') ?? 0} complete ·{' '}
             {count('empty') ?? 0} without episodes yet.
+            {data.noFolder > 0 && (
+              <span className="text-warning">
+                {' '}
+                {data.noFolder} enabled {data.noFolder === 1 ? 'rule has' : 'rules have'} no “Save
+                to” folder and can&apos;t be checked.
+              </span>
+            )}
           </>
         )}
       </p>

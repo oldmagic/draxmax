@@ -94,6 +94,12 @@ const earlyFailure = core.engineFailure();
 if (earlyFailure) onEngineFatal(earlyFailure);
 core.events.on('engine:warning', (err) => app.log.warn(`BitTorrent engine: ${err.message}`));
 process.on('SIGINT', () => void shutdown('SIGINT'));
+// A bug must not take resume data with it: flush and exit, and let the supervisor restart us.
+process.on('uncaughtException', (err) => {
+  app.log.fatal(err, 'Uncaught exception');
+  void shutdown('uncaught exception', 1);
+});
+process.on('unhandledRejection', (err) => app.log.error(err, 'Unhandled rejection'));
 
 await app.listen({ port, host });
 app.log.info(

@@ -20,6 +20,7 @@ import { toast } from 'sonner';
 import type { ArticleDTO, FeedDTO, RuleDTO, RuleImportResult, RuleInput } from '@draxmax/shared';
 import { PathInput } from '@/components/FolderPicker';
 import { MissingTab } from '@/components/MissingEpisodes';
+import { useUi } from '@/stores/ui';
 import { RssJsonEditorButton } from '@/components/RssJsonEditor';
 import { SelectedRulesPanel } from '@/components/SelectedRulesPanel';
 import { Badge } from '@/components/ui/badge';
@@ -45,7 +46,19 @@ function timeAgo(iso: string | null): string {
 }
 
 export function RssPage() {
-  const [tab, setTab] = useState('feeds');
+  // Arriving with a rule to follow (from Search or an article) opens the rule editor.
+  const pending = useUi((s) => s.ruleDraft);
+  const [draft, setDraft] = useState(pending);
+  const [tab, setTab] = useState(draft ? 'rules' : 'feeds');
+  if (pending && pending !== draft) {
+    setDraft(pending);
+    setTab('rules');
+  }
+  // Handed over: a later visit to this page starts normally.
+  useEffect(() => {
+    if (pending) useUi.setState({ ruleDraft: null });
+  }, [pending]);
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex flex-wrap items-end justify-between gap-4 pb-4">
@@ -71,7 +84,7 @@ export function RssPage() {
           <FeedsTab />
         </TabsContent>
         <TabsContent value="rules" className="min-h-0 flex-1">
-          <RulesTab />
+          <RulesTab key={draft ? JSON.stringify(draft) : 'rules'} draft={draft} />
         </TabsContent>
         <TabsContent value="missing" className="min-h-0 flex-1">
           <MissingTab />
@@ -357,6 +370,21 @@ function ArticleRow({
           </a>
         </Tooltip>
       )}
+      <Tooltip content="Follow this show: create a download rule from this release">
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          aria-label={`Follow ${a.title}`}
+          onClick={() =>
+            void api.suggestRule(a.title).then(
+              (d) => useUi.getState().followShow({ ...d, assignedFeedIds: [a.feedId] }),
+              (e: Error) => toast.error(e.message),
+            )
+          }
+        >
+          <Wand2 />
+        </Button>
+      </Tooltip>
       <Tooltip content={a.torrentURL ? 'Download' : 'No torrent link'}>
         <span>
           <Button
@@ -559,13 +587,14 @@ function toInput(r: RuleDTO): RuleInput {
     tags: r.tags,
     savePath: r.savePath ?? '',
     addPaused: r.addPaused,
+    missingMode: r.missingMode ?? 'default',
   };
 }
 
-function RulesTab() {
+function RulesTab({ draft }: { draft: RuleInput | null }) {
   const qc = useQueryClient();
   const { data: rules = [] } = useQuery({ queryKey: ['rss', 'rules'], queryFn: api.rules });
-  const [chosen, setSelected] = useState<string | 'new' | null>(null);
+  const [chosen, setSelected] = useState<string | 'new' | null>(draft ? 'new' : null);
   const [importing, setImporting] = useState<Record<string, unknown> | null>(null);
   const importInput = useRef<HTMLInputElement>(null);
   // Rules ticked for bulk actions (separate from the rule open in the editor).
@@ -806,6 +835,7 @@ function RulesTab() {
           <RuleEditor
             key={selected}
             rule={current}
+            draft={selected === 'new' ? draft : null}
             onSaved={(r) => setSelected(r.id)}
             onDeleted={() => setSelected(null)}
           />
@@ -1004,20 +1034,26 @@ const lines = (s: string) =>
 
 function RuleEditor({
   rule,
+  draft,
   onSaved,
   onDeleted,
 }: {
   rule: RuleDTO | null;
+  /** Prefilled values for a new rule ("Follow this show"). */
+  draft?: RuleInput | null;
   onSaved(r: RuleDTO): void;
   onDeleted(): void;
 }) {
   const qc = useQueryClient();
   const { data: feeds = [] } = useQuery({ queryKey: ['rss', 'feeds'], queryFn: api.feeds });
   const { data: categories = [] } = useQuery({ queryKey: ['categories'], queryFn: api.categories });
-  const [r, setR] = useState<RuleInput>(rule ? toInput(rule) : EMPTY_RULE);
-  const [contain, setContain] = useState((rule?.mustContain ?? []).join('\n'));
-  const [notContain, setNotContain] = useState((rule?.mustNotContain ?? []).join('\n'));
-  const [tags, setTags] = useState((rule?.tags ?? []).join(', '));
+  const start = rule ?? draft;
+  const [r, setR] = useState<RuleInput>(
+    rule ? toInput(rule) : draft ? { ...EMPTY_RULE, ...draft } : EMPTY_RULE,
+  );
+  const [contain, setContain] = useState((start?.mustContain ?? []).join('\n'));
+  const [notContain, setNotContain] = useState((start?.mustNotContain ?? []).join('\n'));
+  const [tags, setTags] = useState((start?.tags ?? []).join(', '));
   const [busy, setBusy] = useState(false);
   const set = (p: Partial<RuleInput>) => setR((x) => ({ ...x, ...p }));
   // The enable checkbox in the rule list saves directly; reflect it here.
@@ -1249,6 +1285,27 @@ function RuleEditor({
           checked={r.addPaused}
           onChange={(v) => set({ addPaused: v })}
         />
+        <Field
+          label="Missing episodes"
+          hint={
+            !r.savePath?.trim() && (r.missingMode ?? 'default') !== 'off'
+              ? 'Needs a “Save to” folder above: without one this rule is not checked for missing episodes.'
+              : 'Episodes that RSS missed are searched on your sites and indexers and added. See the Missing tab.'
+          }
+        >
+          <select
+            value={r.missingMode ?? 'default'}
+            onChange={(e) => set({ missingMode: e.target.value as RuleInput['missingMode'] })}
+            className="h-10 w-full rounded-xl border bg-surface-2 px-3 text-sm"
+          >
+            <option value="default">
+              Use the setting (fill gaps; empty folder as set in Settings)
+            </option>
+            <option value="gaps">Fill gaps after the first episode I have</option>
+            <option value="all">Whole season, from episode 1</option>
+            <option value="off">Don&apos;t search for this rule</option>
+          </select>
+        </Field>
         <div className="flex items-center justify-between gap-2 border-t pt-4">
           {rule ? (
             <Button

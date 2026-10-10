@@ -84,7 +84,8 @@ export type ServerEvent =
   | { type: 'torrent:added'; torrent: TorrentDTO }
   | { type: 'torrent:removed'; id: string }
   | { type: 'torrent:done'; id: string; name: string }
-  | { type: 'torrent:seeded'; id: string; name: string; minutes: number }
+  | { type: 'torrents:delta'; changed: TorrentDTO[]; order?: string[] }
+  | { type: 'torrent:seeded'; id: string; name: string; minutes: number; removed: boolean }
   | { type: 'torrent:error'; id: string; name: string; error: string }
   | { type: 'rss:updated'; feedId: string | null }
   | { type: 'rss:match'; ruleName: string; title: string; status: 'added' | 'duplicate' }
@@ -113,11 +114,22 @@ export const trackerToggleSchema = z.object({ url: z.string().min(1), enabled: z
 export const categorySchema = z.object({
   name: z.string().trim().min(1).max(100),
   savePath: absolutePath.nullable().optional(),
+  /** Seeding limits for torrents in this category: null = the global setting, 0 = no limit. */
+  seedMinutes: z.number().int().min(0).max(525_600).nullable().optional(),
+  seedRatio: z.number().min(0).max(10_000).nullable().optional(),
 });
 export interface CategoryDTO {
   name: string;
   savePath: string | null;
+  seedMinutes?: number | null;
+  seedRatio?: number | null;
 }
+
+export const setLocationSchema = z.object({
+  savePath: absolutePath,
+  /** Move the files there (default), or just point at a folder that already has them. */
+  moveFiles: z.boolean().default(true),
+});
 
 export interface PeerDTO {
   address: string;
@@ -242,6 +254,8 @@ export const ruleSchema = z.object({
     .refine((p) => p === '' || isAbsolutePath(p), 'Must be an absolute path')
     .optional(),
   addPaused: z.boolean().default(false),
+  /** Missing-episode search for this rule (absent = `default`, the global setting). */
+  missingMode: z.enum(['default', 'off', 'gaps', 'all']).optional(),
 });
 export type RuleInput = z.infer<typeof ruleSchema>;
 

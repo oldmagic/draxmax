@@ -1,7 +1,7 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Toaster } from 'sonner';
 import { Redirect, Route, Switch, useLocation } from 'wouter';
 import { AddTorrentDialog } from '@/components/AddTorrentDialog';
@@ -15,14 +15,26 @@ import { queryClient } from '@/lib/query';
 import { useSystemThemeSync, useTheme } from '@/lib/theme';
 import { AuthScreen } from '@/pages/Auth';
 import { DownloadsPage } from '@/pages/Downloads';
-import { RssPage } from '@/pages/Rss';
-import { SitesPage } from '@/pages/Sites';
-import { NotificationsPage } from '@/pages/Notifications';
-import { SettingsPage } from '@/pages/Settings';
-import { StatsPage } from '@/pages/Stats';
-import { UpcomingPage } from '@/pages/Upcoming';
 import { useAuth } from '@/stores/auth';
 import { startLiveFeed } from '@/stores/torrents';
+
+// Downloads is the landing page; the others load when first opened, so the first paint
+// doesn't pay for the RSS editor, charts or the settings forms.
+const page = <K extends string>(load: () => Promise<Record<K, () => React.JSX.Element>>, name: K) =>
+  lazy(async () => ({ default: (await load())[name] }));
+const SearchPage = page(() => import('@/pages/Search'), 'SearchPage');
+const UpcomingPage = page(() => import('@/pages/Upcoming'), 'UpcomingPage');
+const RssPage = page(() => import('@/pages/Rss'), 'RssPage');
+const SitesPage = page(() => import('@/pages/Sites'), 'SitesPage');
+const NotificationsPage = page(() => import('@/pages/Notifications'), 'NotificationsPage');
+const StatsPage = page(() => import('@/pages/Stats'), 'StatsPage');
+const SettingsPage = page(() => import('@/pages/Settings'), 'SettingsPage');
+
+const PageLoading = (
+  <div className="grid h-full place-items-center">
+    <Loader2 className="size-6 animate-spin text-muted" aria-label="Loading" />
+  </div>
+);
 
 export function App() {
   const [theme] = useTheme();
@@ -85,21 +97,24 @@ function Shell() {
               className="h-full"
             >
               <ErrorBoundary resetKey={location}>
-                <Switch>
-                  <Route path="/">
-                    <Redirect to="/downloads" />
-                  </Route>
-                  <Route path="/downloads" component={DownloadsPage} />
-                  <Route path="/upcoming" component={UpcomingPage} />
-                  <Route path="/rss" component={RssPage} />
-                  <Route path="/sites" component={SitesPage} />
-                  <Route path="/notifications" component={NotificationsPage} />
-                  <Route path="/stats" component={StatsPage} />
-                  <Route path="/settings" component={SettingsPage} />
-                  <Route>
-                    <Redirect to="/downloads" />
-                  </Route>
-                </Switch>
+                <Suspense fallback={PageLoading}>
+                  <Switch>
+                    <Route path="/">
+                      <Redirect to="/downloads" />
+                    </Route>
+                    <Route path="/downloads" component={DownloadsPage} />
+                    <Route path="/search" component={SearchPage} />
+                    <Route path="/upcoming" component={UpcomingPage} />
+                    <Route path="/rss" component={RssPage} />
+                    <Route path="/sites" component={SitesPage} />
+                    <Route path="/notifications" component={NotificationsPage} />
+                    <Route path="/stats" component={StatsPage} />
+                    <Route path="/settings" component={SettingsPage} />
+                    <Route>
+                      <Redirect to="/downloads" />
+                    </Route>
+                  </Switch>
+                </Suspense>
               </ErrorBoundary>
             </motion.div>
           </AnimatePresence>

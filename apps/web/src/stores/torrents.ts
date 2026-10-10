@@ -35,6 +35,16 @@ function handle(event: ServerEvent): void {
     case 'torrents:snapshot':
       useTorrents.setState({ torrents: event.torrents });
       break;
+    case 'torrents:delta': {
+      const byId = new Map(useTorrents.getState().torrents.map((t) => [t.id, t]));
+      for (const t of event.changed) byId.set(t.id, t);
+      // `order` is sent when the list's membership or order changed.
+      const torrents = event.order
+        ? event.order.flatMap((id) => byId.get(id) ?? [])
+        : useTorrents.getState().torrents.map((t) => byId.get(t.id)!);
+      useTorrents.setState({ torrents });
+      break;
+    }
     case 'torrent:added':
       useTorrents.getState().upsert(event.torrent);
       break;
@@ -47,7 +57,9 @@ function handle(event: ServerEvent): void {
       break;
     case 'torrent:seeded':
       toast.info('Finished seeding', {
-        description: `${event.name} was removed from the list after ${event.minutes} min. Its files were kept.`,
+        description: event.removed
+          ? `${event.name} was removed from the list. Its files were kept.`
+          : `${event.name} reached its seeding limit and was stopped.`,
       });
       break;
     case 'torrent:error':

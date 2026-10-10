@@ -7,6 +7,7 @@ import {
   categorySchema,
   queueMoveSchema,
   removeTorrentSchema,
+  setLocationSchema,
   setFilesSchema,
   trackerToggleSchema,
   trackerUrlsSchema,
@@ -57,6 +58,17 @@ export async function torrentRoutes(app: FastifyInstance, { core }: { core: Core
   app.post('/api/torrents/:id/queue', async (req) =>
     t.moveInQueue(id(req), queueMoveSchema.parse(req.body).move),
   );
+  app.post('/api/torrents/:id/location', async (req) => {
+    const body = setLocationSchema.parse(req.body);
+    const torrentId = id(req);
+    t.get(torrentId);
+    // Moving to another drive can take minutes: answer now, the list shows "moving" and a
+    // failure lands on the torrent as an error.
+    const move = t.setLocation(torrentId, body.savePath, body.moveFiles);
+    const first = await Promise.race([move, new Promise<null>((r) => setTimeout(r, 300, null))]);
+    move.catch(() => undefined);
+    return first ?? t.get(torrentId);
+  });
   app.get('/api/torrents/:id/peers', async (req) => t.peers(id(req)));
 
   app.patch('/api/torrents/:id/files', async (req) => {
@@ -88,7 +100,12 @@ export async function torrentRoutes(app: FastifyInstance, { core }: { core: Core
   app.put('/api/categories/:name', async (req) => {
     const { name } = nameParams.parse(req.params);
     const body = categorySchema.parse({ ...(req.body as object), name });
-    return core.categories.save({ name: body.name, savePath: body.savePath ?? null });
+    return core.categories.save({
+      name: body.name,
+      savePath: body.savePath ?? null,
+      seedMinutes: body.seedMinutes ?? null,
+      seedRatio: body.seedRatio ?? null,
+    });
   });
   app.delete('/api/categories/:name', async (req, reply) => {
     core.categories.delete(nameParams.parse(req.params).name);

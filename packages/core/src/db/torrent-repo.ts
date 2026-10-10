@@ -19,7 +19,11 @@ export interface TorrentRecord {
   priority: number;
   filePriorities: FilePriority[];
   /** Trackers in announce order; disabled ones are kept but not announced to. */
-  trackers: { url: string; enabled: boolean }[];
+  trackers: {
+    url: string;
+    enabled: boolean;
+    /** Added from the global default list, not by the torrent or the user. */ auto?: boolean;
+  }[];
   /** Last known file list and progress, so stopped torrents can still be shown and deleted. */
   files: EngineFileStats[];
   bitfield: Uint8Array | null;
@@ -31,6 +35,12 @@ export interface TorrentRecord {
   error: string | null;
   /** Time spent seeding (finished and running), across sessions. */
   seedingSeconds: number;
+  /** Final folder while the data is still in the "incomplete" folder (`savePath`). */
+  completePath: string | null;
+  /** The torrent's private flag (BEP 27): never gets public trackers added. */
+  private: boolean;
+  /** Resumed by the user after a seeding limit stopped it: limits no longer apply. */
+  seedExempt: boolean;
 }
 
 interface Row {
@@ -56,6 +66,9 @@ interface Row {
   total_size: number;
   error: string | null;
   seeding_seconds: number;
+  complete_path: string | null;
+  is_private: number;
+  seed_exempt: number;
 }
 
 function fromRow(r: Row): TorrentRecord {
@@ -82,6 +95,9 @@ function fromRow(r: Row): TorrentRecord {
     totalSize: r.total_size,
     error: r.error,
     seedingSeconds: r.seeding_seconds,
+    completePath: r.complete_path,
+    private: r.is_private === 1,
+    seedExempt: r.seed_exempt === 1,
   };
 }
 
@@ -109,6 +125,9 @@ function toParams(t: TorrentRecord) {
     total_size: t.totalSize,
     error: t.error,
     seeding_seconds: Math.floor(t.seedingSeconds),
+    complete_path: t.completePath,
+    is_private: t.private ? 1 : 0,
+    seed_exempt: t.seedExempt ? 1 : 0,
   };
 }
 
@@ -135,6 +154,9 @@ const COLUMNS = [
   'total_size',
   'seeding_seconds',
   'error',
+  'complete_path',
+  'is_private',
+  'seed_exempt',
 ] as const;
 
 /** CRUD for the `torrents` table. */

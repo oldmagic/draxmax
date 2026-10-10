@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import { hostname } from 'node:os';
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -6,8 +6,17 @@ import type { Core } from '@draxmax/core';
 
 export const SESSION_COOKIE = 'draxmax_session';
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
+
+/** The session id a request carries: our cookie, or the one qBittorrent API clients use. */
+function sessionCookie(req: FastifyRequest): string | undefined {
+  return req.cookies?.[SESSION_COOKIE] ?? req.cookies?.SID;
+}
 const MAX_FAILURES = 5;
 const FAILURE_WINDOW_MS = 60_000;
+/** A session's sliding expiry is written back to the database at most this often. */
+const SESSION_TOUCH_MS = 3600 * 1000;
+
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
 /** `scrypt$<salt b64>$<hash b64>` */
 export function hashPassword(password: string): string {
@@ -91,7 +100,9 @@ export interface AuthStatus {
  *   create credentials (first-run "secure your Web UI" step).
  */
 export class AuthService {
-  private readonly sessions = new Map<string, number>();
+  /** Session id hash → expiry. Only hashes are kept (and persisted), never the cookie value. */
+  private readonly sessions = new Map<string, { exp: number; saved: number }>();
+  private readonly sessionEndListeners = new Set<(idHash: string | null) => void>();
   private readonly failures = new Map<string, { count: number; since: number }>();
   private readonly envHash: string | null;
   /**
@@ -106,6 +117,89 @@ export class AuthService {
     private readonly opts: AuthOptions = {},
   ) {
     this.envHash = opts.envPassword ? hashPassword(opts.envPassword) : null;
+    this.loadSessions();
+  }
+
+  private kv(key: string): string | null {
+    const row = this.core.db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as
+      { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  private setKv(key: string, value: string): void {
+    this.core.db
+      .prepare(
+        'INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      )
+      .run(key, value);
+  }
+
+  /**
+   * Sessions survive restarts, but only for the login they were created with: if the
+   * username or password changed while we were down (settings file, WEBUI_PASSWORD), they
+   * are all dropped.
+   */
+  private loadSessions(): void {
+    const db = this.core.db;
+    let salt = this.kv('session_salt');
+    if (!salt) {
+      salt = randomBytes(16).toString('hex');
+      this.setKv('session_salt', salt);
+    }
+    const binding = sha256(
+      [
+        salt,
+        this.core.settings.get().webuiUsername,
+        this.opts.envPassword ?? this.core.settings.get().webuiPasswordHash,
+      ].join('\0'),
+    );
+    if (this.kv('session_binding') !== binding) {
+      db.prepare('DELETE FROM sessions').run();
+      this.setKv('session_binding', binding);
+    }
+    this.bindingSalt = salt;
+    db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
+    for (const r of db.prepare('SELECT id_hash, expires_at FROM sessions').all() as unknown as {
+      id_hash: string;
+      expires_at: number;
+    }[])
+      this.sessions.set(r.id_hash, { exp: r.expires_at, saved: r.expires_at });
+  }
+
+  private bindingSalt = '';
+
+  private rebind(): void {
+    this.setKv(
+      'session_binding',
+      sha256(
+        [
+          this.bindingSalt,
+          this.core.settings.get().webuiUsername,
+          this.opts.envPassword ?? this.core.settings.get().webuiPasswordHash,
+        ].join('\0'),
+      ),
+    );
+  }
+
+  /** Called when a session ends (its id hash), or all of them do (null). */
+  onSessionEnd(fn: (idHash: string | null) => void): () => void {
+    this.sessionEndListeners.add(fn);
+    return () => this.sessionEndListeners.delete(fn);
+  }
+
+  private endAllSessions(): void {
+    this.sessions.clear();
+    this.core.db.prepare('DELETE FROM sessions').run();
+    this.rebind();
+    for (const fn of this.sessionEndListeners) fn(null);
+  }
+
+  /** How this request is authorized: the kind, plus the session's id hash for cookies. */
+  authKind(req: FastifyRequest): { kind: 'token' | 'session' | 'local'; idHash: string | null } {
+    if (this.tokenOk(req)) return { kind: 'token', idHash: null };
+    const sid = sessionCookie(req);
+    if (this.configured() && sid) return { kind: 'session', idHash: sha256(sid) };
+    return { kind: 'local', idHash: null };
   }
 
   private passwordHash(): string {
@@ -127,7 +221,12 @@ export class AuthService {
   private tokenOk(req: FastifyRequest): boolean {
     if (!this.opts.token) return false;
     const header = req.headers.authorization;
-    const q = req.query as Record<string, unknown> | undefined;
+    // `?token=` puts the secret in URLs (history, logs, proxies), so it is only accepted
+    // where a header can't be sent: the browser WebSocket handshake.
+    const q =
+      req.routeOptions?.url === '/api/ws'
+        ? (req.query as Record<string, unknown> | undefined)
+        : undefined;
     const given = header?.startsWith('Bearer ')
       ? header.slice(7)
       : typeof q?.token === 'string'
@@ -137,14 +236,22 @@ export class AuthService {
   }
 
   private sessionOk(req: FastifyRequest): boolean {
-    const sid = req.cookies?.[SESSION_COOKIE];
+    const sid = sessionCookie(req);
     if (!sid) return false;
-    const exp = this.sessions.get(sid);
-    if (!exp || exp < Date.now()) {
-      this.sessions.delete(sid);
+    const idHash = sha256(sid);
+    const s = this.sessions.get(idHash);
+    const now = Date.now();
+    if (!s || s.exp < now) {
+      if (s) this.dropSession(idHash);
       return false;
     }
-    this.sessions.set(sid, Date.now() + SESSION_TTL_MS);
+    s.exp = now + SESSION_TTL_MS;
+    if (s.exp - s.saved > SESSION_TOUCH_MS) {
+      s.saved = s.exp;
+      this.core.db
+        .prepare('UPDATE sessions SET expires_at = ? WHERE id_hash = ?')
+        .run(s.exp, idHash);
+    }
     return true;
   }
 
@@ -249,13 +356,26 @@ export class AuthService {
 
   createSession(): string {
     const sid = randomBytes(32).toString('base64url');
-    this.sessions.set(sid, Date.now() + SESSION_TTL_MS);
+    const exp = Date.now() + SESSION_TTL_MS;
+    const idHash = sha256(sid);
+    // Expired sessions are only noticed when presented; sweep them here so they can't pile up.
+    for (const [k, v] of this.sessions) if (v.exp < Date.now()) this.dropSession(k);
+    this.sessions.set(idHash, { exp, saved: exp });
+    this.core.db
+      .prepare('INSERT OR REPLACE INTO sessions (id_hash, expires_at) VALUES (?, ?)')
+      .run(idHash, exp);
     return sid;
   }
 
+  private dropSession(idHash: string): void {
+    this.sessions.delete(idHash);
+    this.core.db.prepare('DELETE FROM sessions WHERE id_hash = ?').run(idHash);
+    for (const fn of this.sessionEndListeners) fn(idHash);
+  }
+
   logout(req: FastifyRequest): void {
-    const sid = req.cookies?.[SESSION_COOKIE];
-    if (sid) this.sessions.delete(sid);
+    const sid = sessionCookie(req);
+    if (sid) this.dropSession(sha256(sid));
   }
 
   /** Records a security event in the notification history. */
@@ -284,7 +404,7 @@ export class AuthService {
       webuiUsername: username,
       webuiPasswordHash: hashPassword(password),
     });
-    this.sessions.clear();
+    this.endAllSessions();
     this.security(
       'info',
       existed ? 'Web UI login changed' : 'Web UI login created',
@@ -297,7 +417,7 @@ export class AuthService {
     if (this.managedByEnv())
       throw new Error('Credentials are set by WEBUI_USERNAME / WEBUI_PASSWORD');
     this.core.settings.update({ webuiUsername: '', webuiPasswordHash: '' });
-    this.sessions.clear();
+    this.endAllSessions();
     this.security(
       'warning',
       'Web UI login removed',

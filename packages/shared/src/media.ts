@@ -64,4 +64,8 @@ export interface MissingResponse {
   lastRunAt: string | null;
   /** Torrents added by the last run. */
   lastRunAdded: number;
+  /** Enabled rules that can't be checked because they have no save folder. */
+  noFolder: number;
+  /** What happens for a folder without episodes (the global setting). */
+  whenEmpty: 'wait' | 'download';
 }

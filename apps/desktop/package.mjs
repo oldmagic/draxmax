@@ -97,8 +97,8 @@ writeFileSync(
       main: 'main.js',
       type: 'module',
       // Placeholder project metadata (required for .deb); replace before publishing.
-      author: { name: 'DraxMax contributors', email: 'maintainers@draxmax.invalid' },
-      homepage: 'https://github.com/draxmax/draxmax',
+      author: { name: 'DraxMax contributors', email: 'oldmagic@users.noreply.github.com' },
+      homepage: 'https://github.com/oldmagic/draxmax',
       license: 'MIT',
       // Declared so electron-builder packages exactly these (it would otherwise scan the workspace).
       dependencies: Object.fromEntries(

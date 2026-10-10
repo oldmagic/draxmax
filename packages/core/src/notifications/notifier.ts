@@ -51,12 +51,14 @@ export function wireNotifications(events: CoreEvents, n: NotificationService): (
         dedupeKey: `torrent-error:${t.id}`,
       }),
     ),
-    events.on('torrent:seeded', (t) =>
+    events.on('torrent:seeded', (t, { removed }) =>
       n.add({
         category: 'download',
         level: 'info',
         title: `Finished seeding: ${t.name}`,
-        body: 'Removed from the list after reaching the seeding time limit. Its files were kept.',
+        body: removed
+          ? 'Removed from the list after reaching its seeding limit. Its files were kept.'
+          : 'Stopped after reaching its seeding limit.',
         link: '/downloads',
       }),
     ),

@@ -145,6 +145,13 @@ function General({ t }: { t: TorrentDTO }) {
             >
               <Copy className="size-3.5" />
             </button>
+            <button
+              type="button"
+              className="font-sans text-accent hover:underline"
+              onClick={() => useDownloadsUi.getState().askMove([t.id])}
+            >
+              Move…
+            </button>
           </dd>
         </div>
         <div className="flex items-center gap-3">

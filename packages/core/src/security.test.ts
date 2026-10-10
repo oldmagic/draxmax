@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
+import { gzipSync } from 'node:zlib';
 import { fetchBytes, isPrivateAddress } from './net/http.ts';
 import { parseRelease } from './media/parse-title.ts';
 import { isUnsafeTorrentPath, parseTorrentFile } from './torrent/sources.ts';
@@ -45,6 +46,37 @@ describe('SSRF protection', () => {
       // Admin-configured LAN services still work.
       expect(Buffer.from((await fetchBytes(`${url}/x`)).body).toString()).toBe('ok');
       await expect(fetchBytes('file:///etc/passwd')).rejects.toThrow(/Unsupported URL scheme/);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('connects to the address it checked, decodes compressed bodies and caps their size', async () => {
+    const seen: string[] = [];
+    const server = createServer((req, res) => {
+      seen.push(`${req.headers.host} ${req.headers['accept-encoding']}`);
+      if (req.url === '/big') {
+        res.writeHead(200, { 'content-encoding': 'gzip' });
+        return res.end(gzipSync(Buffer.alloc(4 * 1024 * 1024)));
+      }
+      res.writeHead(200, { 'content-encoding': 'gzip', 'content-type': 'text/plain' });
+      res.end(gzipSync('hello'));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      // The name is resolved once; the request goes to that address with the name as Host.
+      const res = await fetchBytes(`http://localhost:${port}/x`);
+      expect(Buffer.from(res.body).toString()).toBe('hello');
+      expect(res.contentType).toBe('text/plain');
+      expect(seen[0]).toBe(`localhost:${port} gzip, deflate, br`);
+      // 4 MB of zeros is a few KB on the wire; the cap applies to the decoded size.
+      await expect(
+        fetchBytes(`http://localhost:${port}/big`, { maxBytes: 1024 * 1024 }),
+      ).rejects.toThrow(/too large/);
+      await expect(
+        fetchBytes(`http://localhost:${port}/x`, { allowPrivate: false }),
+      ).rejects.toThrow(/not a public address/);
     } finally {
       server.close();
     }

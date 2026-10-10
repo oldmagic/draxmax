@@ -181,6 +181,7 @@ class WebTorrentHandle implements EngineTorrent {
       seeds: t.wires.filter((w) => w.isSeeder).length,
       hasMetadata,
       ready: t.ready,
+      private: hasMetadata && (t as unknown as { private?: boolean }).private === true,
       files: t.files.map((f) => ({
         name: f.name,
         path: f.path,

@@ -25,6 +25,7 @@ interface DownloadsUi {
   detailTab: string;
   removeIds: string[] | null;
   categoryIds: string[] | null;
+  moveIds: string[] | null;
   setView(v: ViewMode): void;
   setFilter(p: Partial<Pick<DownloadsUi, 'status' | 'category' | 'tag' | 'query'>>): void;
   toggle(id: string): void;
@@ -36,6 +37,7 @@ interface DownloadsUi {
   closeDetail(): void;
   askRemove(ids: string[] | null): void;
   askCategory(ids: string[] | null): void;
+  askMove(ids: string[] | null): void;
 }
 
 export const useDownloadsUi = create<DownloadsUi>((set, get) => ({
@@ -50,6 +52,7 @@ export const useDownloadsUi = create<DownloadsUi>((set, get) => ({
   detailTab: 'general',
   removeIds: null,
   categoryIds: null,
+  moveIds: null,
   setView: (view) => {
     try {
       localStorage.setItem('draxmax-view', view);
@@ -81,4 +84,5 @@ export const useDownloadsUi = create<DownloadsUi>((set, get) => ({
   closeDetail: () => set({ detailId: null }),
   askRemove: (removeIds) => set({ removeIds }),
   askCategory: (categoryIds) => set({ categoryIds }),
+  askMove: (moveIds) => set({ moveIds }),
 }));

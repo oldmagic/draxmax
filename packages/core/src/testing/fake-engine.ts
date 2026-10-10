@@ -34,6 +34,7 @@ export class FakeTorrent implements EngineTorrent {
     seeds: 0,
     hasMetadata: false,
     ready: false,
+    private: false,
     files: [],
   };
 
