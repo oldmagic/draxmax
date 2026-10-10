@@ -168,7 +168,7 @@ describe('recorded events', () => {
     const announce = (items: { id: string; title: string; reason?: string }[]) =>
       (Reflect.get(core.upcoming, 'announceNew') as (i: unknown[]) => void).call(
         core.upcoming,
-        items,
+        items.map((i) => ({ ...i, matchedLibraryEntries: [] })),
       );
     announce([{ id: 'a', title: 'The Expanse', reason: 'Season 6 of The Expanse is out' }]);
     expect(core.notifications.list({ category: 'upcoming' }).items).toHaveLength(0);

@@ -138,6 +138,28 @@ export class TmdbClient {
     return this.get(`/collection/${id}`, {}, 3 * 24 * HOUR);
   }
 
+  /** Most popular movies or new shows whose (first) release falls between two dates. */
+  async discover(
+    type: 'movie' | 'tv',
+    from: string,
+    to: string,
+    page = 1,
+  ): Promise<TmdbListItem[]> {
+    const field = type === 'movie' ? 'primary_release_date' : 'first_air_date';
+    const r = await this.get<{ results: TmdbListItem[] }>(
+      `/discover/${type}`,
+      {
+        [`${field}.gte`]: from,
+        [`${field}.lte`]: to,
+        sort_by: 'popularity.desc',
+        include_adult: 'false',
+        page,
+      },
+      6 * HOUR,
+    );
+    return r.results ?? [];
+  }
+
   async list(
     path: '/movie/upcoming' | '/movie/now_playing' | '/tv/on_the_air' | '/tv/airing_today',
     page = 1,
