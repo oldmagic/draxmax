@@ -16,17 +16,28 @@ export async function authRoutes(
 ): Promise<void> {
   app.get('/api/auth/status', async (req) => auth.status(req));
 
-  app.post('/api/auth/login', async (req, reply) => {
-    const { username, password } = credentials.parse(req.body);
-    const sid = auth.login(req, username, password);
-    if (sid === 'rate_limited')
-      return reply.status(429).send({ error: 'Too many attempts. Try again in a minute.' });
-    if (!sid) return reply.status(401).send({ error: 'Wrong username or password' });
-    auth.setCookie(req, reply, sid);
-    // Report the new session as signed in (the cookie only arrives with the next request).
-    req.cookies[SESSION_COOKIE] = sid;
-    return auth.status(req);
-  });
+  app.post(
+    '/api/auth/login',
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 minute',
+        },
+      },
+    },
+    async (req, reply) => {
+      const { username, password } = credentials.parse(req.body);
+      const sid = auth.login(req, username, password);
+      if (sid === 'rate_limited')
+        return reply.status(429).send({ error: 'Too many attempts. Try again in a minute.' });
+      if (!sid) return reply.status(401).send({ error: 'Wrong username or password' });
+      auth.setCookie(req, reply, sid);
+      // Report the new session as signed in (the cookie only arrives with the next request).
+      req.cookies[SESSION_COOKIE] = sid;
+      return auth.status(req);
+    },
+  );
 
   app.post('/api/auth/logout', async (req, reply) => {
     auth.logout(req);
