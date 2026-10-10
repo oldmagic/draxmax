@@ -1,5 +1,5 @@
 # Development image: source is bind-mounted, the server and Vite run with hot reload.
-FROM node:24-bookworm
+FROM node:25-bookworm
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH CI=true
 RUN corepack enable
 WORKDIR /src
