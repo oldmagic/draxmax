@@ -13,3 +13,10 @@ onlyBuiltDependencies:
 patchedDependencies:
   bittorrent-protocol@5.0.9: patches/bittorrent-protocol@5.0.9.patch
   webtorrent@3.0.21: patches/webtorrent@3.0.21.patch
+
+auditConfig:
+  ignoreGhsas:
+    # `ip` isPublic() SSRF (no fixed release). Only bittorrent-tracker's tracker *server*
+    # imports it (lib/server/parse-udp.js); DraxMax runs the client only and never calls
+    # isPublic/isPrivate. Re-check if bittorrent-tracker starts using it elsewhere.
+    - GHSA-2p57-rm9w-gvfp

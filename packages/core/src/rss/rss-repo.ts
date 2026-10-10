@@ -54,6 +54,7 @@ function ruleFromRow(r: Raw): RuleRow {
     assignedFeedIds: p(r.assigned_feed_ids as string),
     tags: p(r.tags as string),
     addPaused: r.add_paused === 1,
+    missingMode: ((r.missing_mode as string | null) ?? 'default') as RuleRow['missingMode'],
     lastMatchAt: (r.last_match_at as string | null) ?? null,
     createdAt: r.created_at as string,
   };
@@ -301,14 +302,14 @@ export class RssRepository {
     this.db
       .prepare(
         `INSERT INTO rss_rules (id, name, enabled, priority, must_contain, must_not_contain, use_regex, episode_filter,
-           smart_episode_filter, ignore_subsequent_days, assigned_feed_ids, category, tags, save_path, add_paused, last_match_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           smart_episode_filter, ignore_subsequent_days, assigned_feed_ids, category, tags, save_path, add_paused, last_match_at, created_at, missing_mode)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, enabled = excluded.enabled, priority = excluded.priority,
            must_contain = excluded.must_contain, must_not_contain = excluded.must_not_contain, use_regex = excluded.use_regex,
            episode_filter = excluded.episode_filter, smart_episode_filter = excluded.smart_episode_filter,
            ignore_subsequent_days = excluded.ignore_subsequent_days, assigned_feed_ids = excluded.assigned_feed_ids,
            category = excluded.category, tags = excluded.tags, save_path = excluded.save_path, add_paused = excluded.add_paused,
-           last_match_at = excluded.last_match_at`,
+           last_match_at = excluded.last_match_at, missing_mode = excluded.missing_mode`,
       )
       .run(
         r.id,
@@ -328,6 +329,7 @@ export class RssRepository {
         b(r.addPaused),
         r.lastMatchAt,
         r.createdAt,
+        r.missingMode ?? 'default',
       );
   }
 

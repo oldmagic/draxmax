@@ -19,11 +19,14 @@ import {
   searchQuery,
   type Identity,
 } from './plan.ts';
+import { matchesText } from '../rss/rules.ts';
+import type { AddOptions } from '../torrent/manager.ts';
 import {
   animeToshoSource,
   defaultFetchText,
   nyaaSource,
   parseTorznabUrls,
+  sourceCarries,
   torznabSource,
   type FetchText,
   type SearchResult,
@@ -127,7 +130,8 @@ export class MissingService {
       .run(JSON.stringify(s));
   }
 
-  private sources(): SearchSource[] {
+  /** Every enabled search source: built-in indexers, Torznab endpoints and sites. */
+  sources(): SearchSource[] {
     const s = this.deps.settings();
     const fetchText = this.deps.fetchText ?? defaultFetchText;
     const gap = this.deps.sourceIntervalMs;
@@ -139,9 +143,11 @@ export class MissingService {
     ];
   }
 
-  /** Rules that can be checked: enabled, with a save folder. */
+  /** Rules that can be checked: enabled, with a save folder, and not opted out. */
   private rules(): RuleRow[] {
-    return this.deps.repo.rules().filter((r) => r.enabled && r.savePath?.trim());
+    return this.deps.repo
+      .rules()
+      .filter((r) => r.enabled && r.savePath?.trim() && r.missingMode !== 'off');
   }
 
   get(): MissingResponse {
@@ -174,6 +180,10 @@ export class MissingService {
       current: this.current,
       lastRunAt: s.lastRunAt,
       lastRunAdded: s.lastRunAdded,
+      noFolder: this.deps.repo
+        .rules()
+        .filter((r) => r.enabled && !r.savePath?.trim() && r.missingMode !== 'off').length,
+      whenEmpty: this.deps.settings().missingWhenEmpty,
     };
   }
 
@@ -273,21 +283,34 @@ export class MissingService {
       .filter((t) => samePath(t.savePath, savePath))
       .flatMap((t) => [t.name, ...t.files.map((f) => basename(f.path || f.name))]);
     const names = [...onDisk, ...inClient];
-    const id = inferIdentity(names);
-    if (!id)
+    const mode = rule.missingMode ?? 'default';
+    let id = inferIdentity(names);
+    // An empty folder has nothing to compare against. Either wait for RSS to bring the first
+    // episode, or (per rule, or by the global setting) fetch the season from episode 1.
+    const fromStart =
+      mode === 'all' || (!id && mode === 'default' && settings.missingWhenEmpty === 'download');
+    if (!id && !fromStart)
       return {
         ...base,
         state: 'empty',
-        message: 'No episodes in this folder yet, so there is nothing to compare against.',
+        message:
+          'No episodes in this folder yet: waiting for the first one from RSS. To fetch the season from episode 1 instead, set “Missing episodes” on the rule to “Whole season”.',
       };
 
-    const have = episodesOf(names, id);
-    for (const e of episodesFromKeys(this.deps.repo.downloadedEpisodes(rule.id).keys(), id))
-      have.add(e);
+    // Without files the kind of show is a guess from the folder and category names.
+    const kind = id
+      ? id.anime
+        ? 'anime'
+        : 'tv'
+      : /anime/i.test(`${savePath} ${rule.category ?? ''}`)
+        ? 'anime'
+        : null;
     const query = searchQuery(rule, id);
     const results: SearchResult[] = [];
     const errors: string[] = [];
-    const usable = sources.filter((s) => id.anime || !s.animeOnly);
+    const usable = sources.filter((s) =>
+      kind ? sourceCarries(s, kind) : sourceCarries(s, 'anime') || sourceCarries(s, 'tv'),
+    );
     for (const source of usable) {
       try {
         results.push(...(await source.search(query)));
@@ -296,22 +319,45 @@ export class MissingService {
         this.runErrors.set(source.name, (err as Error).message);
       }
     }
-    const shown = { ...base, title: id.title, season: id.season, have: sorted(have) };
+    const retry = next(settings.missingIntervalHours * HOUR);
     if (usable.length === 0)
       return {
-        ...shown,
+        ...base,
+        title: id?.title ?? null,
+        season: id?.season ?? null,
         state: 'error',
-        message: 'Live-action shows need a Torznab indexer (Prowlarr or Jackett).',
+        message:
+          kind === 'anime'
+            ? 'No enabled search source carries anime. Add or enable one under Sites.'
+            : 'Live-action shows need a Torznab indexer (Prowlarr or Jackett) or a site that carries TV. Add one under Sites.',
       };
     if (errors.length === usable.length)
       return {
-        ...shown,
+        ...base,
+        title: id?.title ?? null,
+        season: id?.season ?? null,
         state: 'error',
         message: errors.join(' · '),
-        nextCheckAt: next(settings.missingIntervalHours * HOUR),
+        nextCheckAt: retry,
+      };
+    // The show is whatever the rule's own filters pick out of the results.
+    id ??= inferIdentity(results.filter((r) => matchesText(rule, r.title)).map((r) => r.title));
+    if (!id)
+      return {
+        ...base,
+        state: 'no-results',
+        message: `Nothing matching this rule was found for “${query}”, so the show couldn't be identified yet.`,
       };
 
-    const plan = planDownloads(results, rule, id, have, { minSeeders: settings.missingMinSeeders });
+    const have = episodesOf(names, id);
+    for (const e of episodesFromKeys(this.deps.repo.downloadedEpisodes(rule.id).keys(), id))
+      have.add(e);
+    const shown = { ...base, title: id.title, season: id.season, have: sorted(have) };
+
+    const plan = planDownloads(results, rule, id, have, {
+      minSeeders: settings.missingMinSeeders,
+      fromStart,
+    });
     const addedEps: number[] = [];
     const deferred: number[] = [];
     for (const d of plan.downloads) {
@@ -340,6 +386,25 @@ export class MissingService {
     };
   }
 
+  /**
+   * Adds a search result to the client: a magnet as is, a .torrent link fetched with the
+   * credentials of the site or indexer it belongs to. Throws `conflict` if it's in the list.
+   */
+  async addResult(result: SearchResult, opts: AddOptions): Promise<TorrentItem> {
+    if (MAGNET_RE.test(result.url)) return this.deps.torrents.addMagnet(result.url, opts);
+    // Result links come from indexer content: only a configured Torznab endpoint's own
+    // host (or a configured site) may be on the local network.
+    const allowPrivate =
+      parseTorznabUrls(this.deps.settings().torznabUrls).some((u) => sameHost(u, result.url)) ||
+      (this.deps.sites?.ownsUrl(result.url) ?? false);
+    const data = await (this.deps.fetchTorrent ?? defaultFetchTorrent)(result.url, {
+      allowPrivate,
+      // A site's download link needs its passkey (in the URL) and often its session.
+      headers: this.deps.sites?.headersFor(result.url) ?? {},
+    });
+    return this.deps.torrents.addTorrentFile(data, opts);
+  }
+
   /** Adds one release to the client and records it in the RSS history. True if added or already there. */
   private async download(
     rule: RuleRow,
@@ -350,30 +415,17 @@ export class MissingService {
     let status: 'added' | 'duplicate' | 'failed' = 'failed';
     let torrentId: string | null = null;
     let error: string | null = null;
-    const opts = {
-      origin: 'missing' as const,
-      originDetail: rule.name,
-      category: rule.category,
-      tags: rule.tags,
-      savePath: rule.savePath,
-      paused: rule.addPaused,
-    };
     try {
-      if (MAGNET_RE.test(result.url)) {
-        torrentId = this.deps.torrents.addMagnet(result.url, opts).id;
-      } else {
-        // Result links come from indexer content: only a configured Torznab endpoint's own
-        // host may be on the local network.
-        const allowPrivate =
-          parseTorznabUrls(this.deps.settings().torznabUrls).some((u) => sameHost(u, result.url)) ||
-          (this.deps.sites?.ownsUrl(result.url) ?? false);
-        const data = await (this.deps.fetchTorrent ?? defaultFetchTorrent)(result.url, {
-          allowPrivate,
-          // A site's download link needs its passkey (in the URL) and often its session.
-          headers: this.deps.sites?.headersFor(result.url) ?? {},
-        });
-        torrentId = (await this.deps.torrents.addTorrentFile(data, opts)).id;
-      }
+      torrentId = (
+        await this.addResult(result, {
+          origin: 'missing',
+          originDetail: rule.name,
+          category: rule.category ?? result.category,
+          tags: rule.tags,
+          savePath: rule.savePath,
+          paused: rule.addPaused,
+        })
+      ).id;
       status = 'added';
     } catch (err) {
       if (err instanceof CoreError && err.code === 'conflict') status = 'duplicate';

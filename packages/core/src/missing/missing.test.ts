@@ -181,4 +181,109 @@ ${[1, 2, 3, 4, 5]
     expect(core.missing.get().shows[0]!.state).toBe('empty');
     expect(fetchText).not.toHaveBeenCalled();
   });
+
+  it('fetches the season from episode 1 for an empty folder when asked to, per rule or globally', async () => {
+    const saved = await core.rss.saveRule(input(show));
+    await core.missing.run({ force: true });
+    expect(core.missing.get().shows[0]!.state).toBe('empty');
+    expect(core.missing.get().whenEmpty).toBe('wait');
+
+    // Global setting: empty folders start from episode 1 (the show is named by the results).
+    core.settings.update({ missingWhenEmpty: 'download' });
+    await core.missing.run({ force: true });
+    expect(core.missing.get().shows[0]).toMatchObject({
+      title: 'Chii Fuyo',
+      have: [],
+      added: [1, 2, 3, 4],
+      unavailable: [5],
+    });
+    expect(core.torrents.list()).toHaveLength(4);
+
+    // A rule can opt out entirely, and is then not listed at all.
+    await core.rss.saveRule({ ...input(show), missingMode: 'off' }, saved.id);
+    expect(core.missing.get().shows).toEqual([]);
+  });
+
+  it('"whole season" also fetches episodes before the first one owned', async () => {
+    writeFileSync(join(show, '[SubsPlease] Chii Fuyo - 03 (720p) [ABC3].mkv'), '');
+    const saved = await core.rss.saveRule({ ...input(show), missingMode: 'gaps' });
+    core.settings.update({ missingWhenEmpty: 'download' });
+    await core.missing.run({ force: true });
+    expect(core.missing.get().shows[0]).toMatchObject({ have: [3], added: [4] });
+
+    await core.rss.saveRule({ ...input(show), missingMode: 'all' }, saved.id);
+    await core.missing.run({ force: true });
+    expect(core.missing.get().shows[0]).toMatchObject({ added: [1, 2] });
+  });
+
+  it('counts enabled rules that have no folder, and asks only sources that carry the kind', async () => {
+    await core.rss.saveRule({ ...input(show), savePath: undefined });
+    expect(core.missing.get()).toMatchObject({ shows: [], noFolder: 1 });
+
+    writeFileSync(join(show, 'Chii.Fuyo.S01E01.720p.WEB.x264-GRP.mkv'), '');
+    await core.rss.saveRule({ ...input(show), name: 'Live action' });
+    core.sites.saveSite({
+      name: 'Movies only',
+      baseUrls: ['https://movies.example/'],
+      searchUrls: ['/s?q={query}'],
+      contentTypes: ['movies'],
+    });
+    await core.missing.run({ force: true });
+    // Live action: the anime indexers and the movies-only site are all left alone.
+    expect(fetchText).not.toHaveBeenCalled();
+    expect(core.missing.get().shows[0]).toMatchObject({ state: 'error' });
+    expect(core.missing.get().shows[0]!.message).toMatch(/Torznab|carries TV/);
+  });
+
+  it('searches from the UI, hands out handles instead of links, and adds by handle', async () => {
+    const res = await core.search.search('Chii Fuyo', 'anime');
+    expect(res.searched).toEqual(['Nyaa', 'AnimeTosho']);
+    expect(res.results[0]).toMatchObject({
+      show: 'Chii Fuyo',
+      episodes: [4],
+      seeders: 40,
+      inList: false,
+    });
+    expect(JSON.stringify(res)).not.toContain('magnet:');
+    const added = await core.search.add(res.results[0]!.id, { category: 'Anime' });
+    expect(added).toMatchObject({ infoHash: hash(4), category: 'Anime' });
+    await expect(core.search.add('nope', {})).rejects.toThrow(/expired/);
+    expect(
+      (await core.search.search('Chii Fuyo')).results.find((r) => r.episodes[0] === 4)!.inList,
+    ).toBe(true);
+    // Movies: no anime-only source is asked.
+    expect((await core.search.search('Dune', 'movies')).searched).toEqual([]);
+  });
+
+  it('manages built-in and Torznab sources without exposing API keys', () => {
+    core.search.addTorznab('http://prowlarr.lan:9696/1/api?apikey=SECRETKEY');
+    expect(() => core.search.addTorznab('http://prowlarr.lan:9696/1/api?apikey=SECRETKEY')).toThrow(
+      /already/,
+    );
+    core.search.setBuiltinEnabled('nyaa', false);
+    const list = core.search.sourceList();
+    expect(list.map((x) => [x.id, x.enabled])).toEqual([
+      ['nyaa', false],
+      ['animetosho', true],
+      ['torznab:0', true],
+    ]);
+    expect(JSON.stringify(list)).not.toContain('SECRETKEY');
+    core.search.removeTorznab(0);
+    expect(core.search.sourceList()).toHaveLength(2);
+  });
+
+  it('suggests a rule from a release name, modelled on existing rules', async () => {
+    await core.rss.saveRule({ ...input(show), category: 'Anime', tags: ['auto'] });
+    const draft = core.rss.suggestRule(
+      '[SubsPlease] Kaoru Hana wa Rin to Saku - 05 (1080p) [ABCD].mkv',
+    );
+    expect(draft).toMatchObject({
+      name: 'Kaoru Hana wa Rin to Saku',
+      mustContain: ['Kaoru Hana wa Rin to Saku SubsPlease 1080p'],
+      savePath: join(dir, 'Anime', 'Kaoru Hana wa Rin to Saku', 'S01'),
+      category: 'Anime',
+      tags: ['auto'],
+      smartEpisodeFilter: true,
+    });
+  });
 });

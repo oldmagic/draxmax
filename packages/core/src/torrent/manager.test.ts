@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -384,5 +384,192 @@ describe('TorrentManager: removal', () => {
 
   it('throws not_found for unknown ids', () => {
     expect(() => core.torrents.get('nope')).toThrow(/not found/);
+  });
+});
+
+describe('TorrentManager: private torrents', () => {
+  it('never adds the default public trackers to a private .torrent', async () => {
+    core.settings.update({ addDefaultTrackers: true, defaultTrackers: ['udp://public.one:1'] });
+    const priv = makeTorrentFile(
+      'Private',
+      [{ path: ['a'], length: 5 }],
+      'https://private.example/announce?passkey=x',
+      { private: 1 },
+    );
+    const item = await core.torrents.addTorrentFile(priv);
+    expect(item.private).toBe(true);
+    expect(item.trackers.map((t) => t.url)).toEqual(['https://private.example/announce?passkey=x']);
+    await settle();
+    expect(engine.last.opts.announce).toEqual(['https://private.example/announce?passkey=x']);
+
+    // A public one still gets them.
+    const pub = await core.torrents.addTorrentFile(
+      makeTorrentFile('Public', [{ path: ['b'], length: 5 }]),
+    );
+    expect(pub.private).toBeUndefined();
+    expect(pub.trackers.map((t) => t.url)).toEqual([
+      'udp://tracker.example:1337',
+      'udp://public.one:1',
+    ]);
+  });
+
+  it('drops the defaults again when a magnet turns out to be private, keeping trackers the user added', async () => {
+    core.settings.update({ addDefaultTrackers: true, defaultTrackers: ['udp://public.one:1'] });
+    const { id } = core.torrents.addMagnet(MAGNET);
+    await settle();
+    expect(engine.last.opts.announce).toEqual(['udp://tracker.one:1337', 'udp://public.one:1']);
+    await core.torrents.addTrackers(id, ['udp://mine.example:9']);
+    await settle();
+    const first = engine.last;
+    first.state.private = true;
+    first.giveMetadata('P', [{ path: 'P/p', size: 10 }]);
+    await settle();
+    expect(first.destroyed).toBe(true);
+    expect(engine.last.opts.announce).toEqual(['udp://tracker.one:1337', 'udp://mine.example:9']);
+    expect(core.torrents.get(id).private).toBe(true);
+    // Remembered across restarts.
+    await core.shutdown();
+    boot();
+    expect(core.torrents.get(id).trackers.map((t) => t.url)).toEqual([
+      'udp://tracker.one:1337',
+      'udp://mine.example:9',
+    ]);
+  });
+});
+
+describe('TorrentManager: seeding limits', () => {
+  const seedOne = async () => {
+    const a = core.torrents.addMagnet(magnetN(1));
+    await vi.advanceTimersByTimeAsync(10);
+    const ta = engine.running[0]!;
+    ta.giveMetadata('A', [{ path: 'A/a', size: 1000 }]);
+    ta.complete();
+    return { id: a.id, torrent: ta };
+  };
+  beforeEach(async () => {
+    await core.shutdown();
+    vi.useFakeTimers();
+    boot();
+  });
+
+  it('stops instead of removing when the action is "pause", and a manual resume keeps seeding', async () => {
+    core.settings.update({ seedTimeLimitMinutes: 1, seedLimitAction: 'pause' });
+    const onSeeded = vi.fn();
+    core.events.on('torrent:seeded', onSeeded);
+    const { id } = await seedOne();
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(core.torrents.get(id).status).toBe('paused');
+    expect(onSeeded.mock.calls[0]![1]).toEqual({ removed: false });
+
+    core.torrents.resume(id);
+    await vi.advanceTimersByTimeAsync(10);
+    const again = engine.running[0]!;
+    again.giveMetadata('A', [{ path: 'A/a', size: 1000 }]);
+    again.complete();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(core.torrents.get(id).status).toBe('seeding');
+    expect(onSeeded).toHaveBeenCalledOnce();
+  });
+
+  it('applies a ratio limit, and category limits override the global ones', async () => {
+    core.settings.update({ seedRatioLimit: 2, seedLimitAction: 'pause' });
+    const { id, torrent } = await seedOne();
+    torrent.state.uploaded = 1500;
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(core.torrents.get(id).status).toBe('seeding');
+    torrent.state.uploaded = 2000;
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(core.torrents.get(id).status).toBe('paused');
+
+    // "Private" category: no ratio limit (0), seed for at least an hour.
+    core.categories.save({ name: 'Private', savePath: null, seedRatio: 0, seedMinutes: 60 });
+    const b = core.torrents.addMagnet(magnetN(2), { category: 'Private' });
+    await vi.advanceTimersByTimeAsync(10);
+    const tb = engine.running.at(-1)!;
+    tb.giveMetadata('B', [{ path: 'B/b', size: 1000 }]);
+    tb.complete();
+    tb.state.uploaded = 9000;
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(core.torrents.get(b.id).status).toBe('seeding');
+    await vi.advanceTimersByTimeAsync(31 * 60_000);
+    expect(core.torrents.get(b.id).status).toBe('paused');
+  });
+});
+
+describe('TorrentManager: locations', () => {
+  const download = async (name = 'Show') => {
+    const item = await core.torrents.addTorrentFile(
+      makeTorrentFile(name, [{ path: ['ep1.mkv'], length: 4 }]),
+    );
+    await settle();
+    return { id: item.id, torrent: engine.last };
+  };
+
+  it("moves a torrent's files to another folder and restarts it there", async () => {
+    const { id } = await download();
+    const from = join(dir, 'downloads');
+    mkdirSync(join(from, 'Show'), { recursive: true });
+    writeFileSync(join(from, 'Show', 'ep1.mkv'), 'data');
+    const to = join(dir, 'library');
+
+    const moved = await core.torrents.setLocation(id, to);
+    await settle();
+    expect(moved.savePath).toBe(to);
+    expect(readFileSync(join(to, 'Show', 'ep1.mkv'), 'utf8')).toBe('data');
+    expect(existsSync(join(from, 'Show'))).toBe(false);
+    expect(engine.last.opts.savePath).toBe(to);
+    // Pointing at a folder without moving rechecks what is there.
+    await core.torrents.setLocation(id, from, false);
+    await settle();
+    expect(engine.last.opts.savePath).toBe(from);
+    expect(engine.last.opts.bitfield).toBeUndefined();
+    expect(existsSync(join(to, 'Show', 'ep1.mkv'))).toBe(true);
+  });
+
+  it('downloads into the incomplete folder and moves to the save folder when done', async () => {
+    const staging = join(dir, 'incomplete');
+    core.settings.update({ incompletePath: staging });
+    const done = vi.fn();
+    core.events.on('torrent:done', done);
+    const { id, torrent } = await download();
+    const final = join(dir, 'downloads');
+    // The list shows where it will end up; the engine writes to the staging folder.
+    expect(core.torrents.get(id).savePath).toBe(final);
+    expect(torrent.opts.savePath).toBe(staging);
+    mkdirSync(join(staging, 'Show'), { recursive: true });
+    writeFileSync(join(staging, 'Show', 'ep1.mkv'), 'data');
+
+    torrent.giveMetadata('Show', [{ path: 'Show/ep1.mkv', size: 4 }]);
+    torrent.complete();
+    await vi.waitFor(() => expect(done).toHaveBeenCalledOnce(), { timeout: 4000 });
+    expect(readFileSync(join(final, 'Show', 'ep1.mkv'), 'utf8')).toBe('data');
+    expect(existsSync(join(staging, 'Show'))).toBe(false);
+    await settle();
+    expect(engine.last.opts.savePath).toBe(final);
+    expect(engine.last.opts.bitfield).toEqual(new Uint8Array([0xff]));
+  });
+
+  it('only rewrites resume data of torrents that changed', async () => {
+    await core.shutdown();
+    vi.useFakeTimers();
+    boot();
+    core.torrents.addMagnet(magnetN(1));
+    core.torrents.addMagnet(magnetN(2));
+    await vi.advanceTimersByTimeAsync(10);
+    const [a] = engine.running;
+    a!.giveMetadata('A', [{ path: 'A/a', size: 10 }]);
+    a!.verify();
+    await vi.advanceTimersByTimeAsync(31_000);
+    // Count rewrites of torrent rows (other services write to the database too).
+    core.db.exec(
+      'CREATE TEMP TABLE w (n); CREATE TEMP TRIGGER tw AFTER UPDATE ON torrents BEGIN INSERT INTO w VALUES (1); END;',
+    );
+    const writes = () => (core.db.prepare('SELECT count(*) AS n FROM w').get() as { n: number }).n;
+    const before = writes();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(writes()).toBe(before);
+    a!.progress(0, 5);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(writes()).toBe(before + 1);
   });
 });

@@ -36,12 +36,14 @@ export function makeTorrentFile(
   name: string,
   files: { path: string[]; length: number }[],
   announce = 'udp://tracker.example:1337',
+  /** Extra keys for the info dictionary, e.g. `{ private: 1 }`. */
+  info: { [key: string]: BValue } = {},
 ): Uint8Array {
   const pieceLength = 16384;
   const total = files.reduce((s, f) => s + f.length, 0);
   const pieces = new Uint8Array(20 * Math.max(1, Math.ceil(total / pieceLength)));
   return bencode({
     announce,
-    info: { name, 'piece length': pieceLength, pieces, files },
+    info: { name, 'piece length': pieceLength, pieces, files, ...info },
   });
 }

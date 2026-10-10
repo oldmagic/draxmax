@@ -7,6 +7,8 @@ export interface ParsedSource {
   name: string | null;
   totalSize: number;
   announce: string[];
+  /** BEP 27 private flag (unknown for magnets until metadata arrives). */
+  private: boolean;
 }
 
 const INFO_HASH_RE = /^[0-9a-f]{40}$/;
@@ -32,6 +34,7 @@ export function parseMagnet(uri: string): ParsedSource {
     name: (Array.isArray(dn) ? dn[0] : dn) ?? null,
     totalSize: 0,
     announce: data.announce ?? [],
+    private: false,
   };
 }
 
@@ -67,6 +70,7 @@ export async function parseTorrentFile(
     name: parsed.name ?? null,
     totalSize: parsed.length ?? 0,
     announce: parsed.announce ?? [],
+    private: (parsed as { private?: boolean }).private === true,
     files: (parsed.files ?? []).map((f) => ({ name: f.name, path: f.path, size: f.length })),
   };
 }

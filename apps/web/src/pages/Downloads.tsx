@@ -17,6 +17,7 @@ import type { TorrentDTO, TorrentStatus } from '@draxmax/shared';
 import { CategoryDialog } from '@/components/torrents/CategoryDialog';
 import { DetailSheet } from '@/components/torrents/DetailSheet';
 import { RemoveDialog } from '@/components/torrents/RemoveDialog';
+import { MoveDialog } from '@/components/torrents/MoveDialog';
 import { TorrentCard, TorrentRow } from '@/components/torrents/TorrentRow';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -279,6 +280,7 @@ export function DownloadsPage() {
       <DetailSheet />
       <RemoveDialog />
       <CategoryDialog />
+      <MoveDialog />
     </div>
   );
 }

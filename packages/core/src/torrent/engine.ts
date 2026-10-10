@@ -78,6 +78,8 @@ export interface EngineTorrentStats {
   hasMetadata: boolean;
   /** True once existing data has been verified and the torrent is transferring. */
   ready: boolean;
+  /** BEP 27 private flag, once metadata is known. */
+  private: boolean;
   files: EngineFileStats[];
 }
 

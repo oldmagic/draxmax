@@ -13,4 +13,5 @@ export const STATUS_META: Record<
   error: { label: 'Error', badge: 'danger', bar: 'danger' },
   checking: { label: 'Checking', badge: 'warning', bar: 'warning' },
   metadata: { label: 'Fetching metadata', badge: 'info', bar: 'muted' },
+  moving: { label: 'Moving files', badge: 'warning', bar: 'warning' },
 };

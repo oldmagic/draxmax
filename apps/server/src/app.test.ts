@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { connect, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { createCore, type Core } from '@draxmax/core';
+import { createCore, webhookRequest, type BackupBundle, type Core } from '@draxmax/core';
 import { FakeEngine, makeTorrentFile } from '@draxmax/core/testing';
 import type { ServerEvent, SettingsResponse, TorrentDTO } from '@draxmax/shared';
 import { buildServer, redactUrl } from './app.ts';
@@ -16,10 +16,22 @@ let core: Core;
 let engine: FakeEngine;
 let app: FastifyInstance;
 
+const hooks: { url: string; body: string; headers: Record<string, string> }[] = [];
+function boot(env: NodeJS.ProcessEnv = {}): Core {
+  engine = new FakeEngine();
+  return createCore({
+    configPath: join(dir, 'c'),
+    downloadPath: join(dir, 'd'),
+    engine,
+    env,
+    webhookSend: async (req) => void hooks.push(req),
+  });
+}
+
 async function setup(token?: string, env: NodeJS.ProcessEnv = {}, envPassword?: string) {
   dir = mkdtempSync(join(tmpdir(), 'draxmax-server-'));
-  engine = new FakeEngine();
-  core = createCore({ configPath: join(dir, 'c'), downloadPath: join(dir, 'd'), engine, env });
+  hooks.length = 0;
+  core = boot(env);
   app = await buildServer({ core, token, snapshotIntervalMs: 20, auth: { envPassword } });
 }
 
@@ -181,8 +193,8 @@ describe('M2 routes', () => {
       payload: { savePath: '/tmp/movies' },
     });
     expect((await app.inject('/api/categories')).json()).toEqual([
-      { name: 'Linux', savePath: null },
-      { name: 'Movies', savePath: '/tmp/movies' },
+      { name: 'Linux', savePath: null, seedMinutes: null, seedRatio: null },
+      { name: 'Movies', savePath: '/tmp/movies', seedMinutes: null, seedRatio: null },
     ]);
     expect((await app.inject('/api/tags')).json()).toEqual(['iso']);
   });
@@ -423,20 +435,107 @@ describe('Web UI auth', () => {
 describe('token auth', () => {
   beforeEach(() => setup('s3cret'));
 
-  it('pushes snapshots over WebSocket', async () => {
+  it('pushes the torrent list over WebSocket, then only what changed', async () => {
     await app.ready();
-    await app.inject({
+    const auth = { authorization: 'Bearer s3cret' };
+    const add = await app.inject({
       method: 'POST',
-      url: '/api/torrents/magnet?token=s3cret',
+      url: '/api/torrents/magnet',
+      headers: auth,
       payload: { magnetURI: MAGNET },
     });
-    const ws = await app.injectWS('/api/ws?token=s3cret');
-    const first = await new Promise<ServerEvent>((resolve) =>
-      ws.once('message', (m: Buffer) => resolve(JSON.parse(m.toString()) as ServerEvent)),
+    const id = add.json<TorrentDTO>().id;
+    const events: ServerEvent[] = [];
+    const ws = await app.injectWS(
+      '/api/ws?token=s3cret',
+      {},
+      {
+        onInit: (s) =>
+          s.on('message', (m: Buffer) => events.push(JSON.parse(m.toString()) as ServerEvent)),
+      },
     );
-    ws.terminate();
+    const until = async (ok: () => boolean) => {
+      for (let i = 0; i < 100 && !ok(); i++) await new Promise((r) => setTimeout(r, 10));
+      expect(ok()).toBe(true);
+    };
+    await until(() => events.length > 0);
+    const first = events[0]!;
     expect(first.type).toBe('torrents:snapshot');
     if (first.type === 'torrents:snapshot') expect(first.torrents).toHaveLength(1);
+
+    // Nothing changes: after the first tick settles, no more torrent messages arrive.
+    await new Promise((r) => setTimeout(r, 80));
+    const settled = events.length;
+    await new Promise((r) => setTimeout(r, 80));
+    expect(events.length).toBe(settled);
+
+    await app.inject({ method: 'POST', url: `/api/torrents/${id}/pause`, headers: auth });
+    await until(() =>
+      events.some((e) => e.type === 'torrents:delta' && e.changed[0]?.status === 'paused'),
+    );
+    await app.inject({ method: 'DELETE', url: `/api/torrents/${id}`, headers: auth });
+    await until(() => events.some((e) => e.type === 'torrents:delta' && e.order?.length === 0));
+    ws.terminate();
+  });
+
+  it('ends live feeds when their session ends, but not token ones', async () => {
+    await app.ready();
+    const auth = { authorization: 'Bearer s3cret' };
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/setup',
+      headers: auth,
+      payload: { username: 'admin', password: 'correct horse' },
+    });
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'admin', password: 'correct horse' },
+      ...REMOTE,
+    });
+    const cookie = cookieOf(login);
+    const closed = (ws: { once(e: 'close', fn: (code: number) => void): void }) =>
+      new Promise<number>((resolve) => ws.once('close', resolve));
+    const session = await app.injectWS('/api/ws', { headers: { cookie } });
+    const token = await app.injectWS('/api/ws?token=s3cret');
+    const code = closed(session);
+    await app.inject({ method: 'POST', url: '/api/auth/logout', headers: { cookie } });
+    expect(await code).toBe(4401);
+    expect(token.readyState).toBe(token.OPEN);
+    token.terminate();
+  });
+
+  it('keeps sessions across a restart, and drops them when the login changes', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/setup',
+      headers: { authorization: 'Bearer s3cret' },
+      payload: { username: 'admin', password: 'correct horse' },
+    });
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'admin', password: 'correct horse' },
+      ...REMOTE,
+    });
+    const cookie = cookieOf(login);
+    const ok = async () =>
+      (await app.inject({ url: '/api/torrents', headers: { cookie }, ...REMOTE })).statusCode;
+    expect(await ok()).toBe(200);
+    // The cookie value itself is never stored.
+    const rows = core.db.prepare('SELECT id_hash FROM sessions').all() as { id_hash: string }[];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) expect(cookie).not.toContain(r.id_hash);
+    expect(JSON.stringify(rows)).not.toContain(cookie.split('=')[1]!);
+
+    await app.close();
+    app = await buildServer({ core, token: 's3cret' });
+    expect(await ok()).toBe(200);
+
+    await app.close();
+    core.settings.update({ webuiUsername: 'someone-else' });
+    app = await buildServer({ core, token: 's3cret' });
+    expect(await ok()).toBe(401);
   });
 
   it('closes the socket of a rejected WebSocket upgrade', async () => {
@@ -454,11 +553,14 @@ describe('token auth', () => {
     expect(response).toMatch(/^HTTP\/1\.1 401/);
   });
 
-  it('accepts the token from anywhere; health is public', async () => {
-    expect((await app.inject('/api/health')).statusCode).toBe(200);
+  it('accepts the token as a header from anywhere; health is public but says nothing', async () => {
+    const health = await app.inject({ url: '/api/health', ...REMOTE });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toEqual({ status: 'ok' });
     expect((await app.inject({ url: '/api/torrents', ...REMOTE })).statusCode).toBe(401);
+    // In a URL the token would end up in logs and history: only the WebSocket takes it there.
     expect((await app.inject({ url: '/api/torrents?token=s3cret', ...REMOTE })).statusCode).toBe(
-      200,
+      401,
     );
     const bearer = (t: string) =>
       app.inject({ url: '/api/torrents', headers: { authorization: `Bearer ${t}` }, ...REMOTE });
@@ -637,5 +739,278 @@ describe('security', () => {
       ...REMOTE,
     });
     expect(count.json()).toEqual({ unread: 0 });
+  });
+});
+
+describe('qBittorrent-compatible API', () => {
+  beforeEach(() => setup());
+  const form = (data: Record<string, string>) => ({
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    payload: new URLSearchParams(data).toString(),
+  });
+
+  it('lets a download manager add, watch, pause and delete torrents', async () => {
+    expect((await app.inject('/api/v2/app/webapiVersion')).body).toBe('2.9.3');
+    await app.inject({
+      method: 'POST',
+      url: '/api/v2/torrents/createCategory',
+      ...form({ category: 'tv-sonarr', savePath: '/data/tv' }),
+    });
+    expect((await app.inject('/api/v2/torrents/categories')).json()).toEqual({
+      'tv-sonarr': { name: 'tv-sonarr', savePath: '/data/tv' },
+    });
+
+    // Sonarr sends .torrent files as multipart, magnets in `urls`.
+    const boundary = 'XBOUNDARYX';
+    const file = Buffer.from(makeTorrentFile('Show.S01E01', [{ path: ['ep.mkv'], length: 100 }]));
+    const multipart = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="category"\r\n\r\ntv-sonarr\r\n`,
+      ),
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="paused"\r\n\r\nfalse\r\n`,
+      ),
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="torrents"; filename="a.torrent"\r\nContent-Type: application/x-bittorrent\r\n\r\n`,
+      ),
+      file,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const add = await app.inject({
+      method: 'POST',
+      url: '/api/v2/torrents/add',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: multipart,
+    });
+    expect(add.body).toBe('Ok.');
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/v2/torrents/add',
+          ...form({ urls: MAGNET, category: 'tv-sonarr' }),
+        })
+      ).body,
+    ).toBe('Ok.');
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/v2/torrents/add',
+          ...form({ urls: 'magnet:?dn=broken' }),
+        })
+      ).body,
+    ).toBe('Fails.');
+
+    const list = (await app.inject('/api/v2/torrents/info?category=tv-sonarr')).json<
+      Record<string, unknown>[]
+    >();
+    expect(list).toHaveLength(2);
+    const show = list.find((x) => x.name === 'Show.S01E01')!;
+    expect(show).toMatchObject({
+      save_path: '/data/tv',
+      content_path: '/data/tv/Show.S01E01',
+      category: 'tv-sonarr',
+      progress: 0,
+    });
+    const hash = show.hash as string;
+    expect((await app.inject(`/api/v2/torrents/files?hash=${hash}`)).json()).toMatchObject([
+      { name: 'Show.S01E01/ep.mkv' },
+    ]);
+    expect((await app.inject(`/api/v2/torrents/properties?hash=${hash}`)).json()).toMatchObject({
+      save_path: '/data/tv',
+    });
+
+    await app.inject({ method: 'POST', url: '/api/v2/torrents/pause', ...form({ hashes: hash }) });
+    expect((await app.inject(`/api/v2/torrents/info?hashes=${hash}`)).json()).toMatchObject([
+      { state: 'pausedDL' },
+    ]);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/v2/torrents/setShareLimits',
+          ...form({ hashes: hash, ratioLimit: '1' }),
+        })
+      ).body,
+    ).toBe('Ok.');
+    await app.inject({
+      method: 'POST',
+      url: '/api/v2/torrents/delete',
+      ...form({ hashes: hash, deleteFiles: 'true' }),
+    });
+    expect((await app.inject('/api/v2/torrents/info')).json()).toHaveLength(1);
+  });
+
+  it('logs in with the Web UI login and an SID cookie', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/setup',
+      payload: { username: 'admin', password: 'correct horse' },
+    });
+    expect((await app.inject({ url: '/api/v2/torrents/info', ...REMOTE })).statusCode).toBe(401);
+    const bad = await app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/login',
+      ...form({ username: 'admin', password: 'nope' }),
+      ...REMOTE,
+    });
+    expect(bad.body).toBe('Fails.');
+    const ok = await app.inject({
+      method: 'POST',
+      url: '/api/v2/auth/login',
+      ...form({ username: 'admin', password: 'correct horse' }),
+      ...REMOTE,
+    });
+    expect(ok.body).toBe('Ok.');
+    const sid = ok.cookies.find((c) => c.name === 'SID')!;
+    expect(sid.httpOnly).toBe(true);
+    const authed = await app.inject({
+      url: '/api/v2/torrents/info',
+      headers: { cookie: `SID=${sid.value}` },
+      ...REMOTE,
+    });
+    expect(authed.statusCode).toBe(200);
+    // Another site still can't drive it.
+    const csrf = await app.inject({
+      method: 'POST',
+      url: '/api/v2/torrents/delete',
+      headers: {
+        cookie: `SID=${sid.value}`,
+        origin: 'https://evil.example',
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      payload: 'hashes=all',
+    });
+    expect(csrf.statusCode).toBe(403);
+  });
+});
+
+describe('backup, locations and outside notifications', () => {
+  beforeEach(() => setup());
+
+  it('backs up everything and restores it on the next start', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/torrents/magnet',
+      payload: { magnetURI: MAGNET },
+    });
+    core.settings.update({ tmdbApiKey: 'tmdb-secret', maxActiveDownloads: 9 });
+    const res = await app.inject('/api/backup');
+    expect(res.headers['content-disposition']).toMatch(/draxmax-backup-.*\.json/);
+    const bundle = res.json<BackupBundle>();
+    expect(Object.keys(bundle.files).sort()).toEqual(['draxmax.db', 'secret.key', 'settings.json']);
+    expect(res.body).not.toContain('tmdb-secret');
+
+    // Things change, then the backup is restored.
+    await core.torrents.remove(core.torrents.list()[0]!.id, false);
+    core.settings.update({ maxActiveDownloads: 2 });
+    expect(
+      (await app.inject({ method: 'POST', url: '/api/backup/restore', payload: { app: 'other' } }))
+        .statusCode,
+    ).toBe(400);
+    const restore = await app.inject({
+      method: 'POST',
+      url: '/api/backup/restore',
+      payload: bundle,
+    });
+    expect(restore.statusCode).toBe(202);
+    expect(core.torrents.list()).toHaveLength(0);
+
+    await app.close();
+    await core.shutdown();
+    core = boot();
+    app = await buildServer({ core });
+    expect(core.torrents.list().map((t) => t.name)).toEqual(['Cosmos']);
+    expect(core.settings.get()).toMatchObject({ maxActiveDownloads: 9, tmdbApiKey: 'tmdb-secret' });
+    expect(existsSync(join(dir, 'c', 'before-restore', 'draxmax.db'))).toBe(true);
+    expect(existsSync(join(dir, 'c', 'restore'))).toBe(false);
+  });
+
+  it('needs the current password for a backup once a login exists', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/setup',
+      payload: { username: 'admin', password: 'correct horse' },
+    });
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'admin', password: 'correct horse' },
+    });
+    const cookie = cookieOf(login);
+    expect((await app.inject({ url: '/api/backup', headers: { cookie } })).statusCode).toBe(403);
+    const ok = await app.inject({
+      url: '/api/backup',
+      headers: { cookie, 'x-confirm-password': 'correct horse' },
+    });
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it("changes a torrent's folder through the API", async () => {
+    const add = await app.inject({
+      method: 'POST',
+      url: '/api/torrents/magnet',
+      payload: { magnetURI: MAGNET },
+    });
+    const id = add.json<TorrentDTO>().id;
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `/api/torrents/${id}/location`,
+          payload: { savePath: 'relative' },
+        })
+      ).statusCode,
+    ).toBe(400);
+    const moved = await app.inject({
+      method: 'POST',
+      url: `/api/torrents/${id}/location`,
+      payload: { savePath: join(dir, 'elsewhere') },
+    });
+    expect(moved.json<TorrentDTO>().savePath).toBe(join(dir, 'elsewhere'));
+  });
+
+  it('sends finished downloads to the webhook in the shape each service reads', async () => {
+    expect((await app.inject({ method: 'POST', url: '/api/notifications/test' })).statusCode).toBe(
+      400,
+    );
+    await app.inject({
+      method: 'PATCH',
+      url: '/api/settings',
+      payload: { notifyWebhookUrl: 'https://ntfy.sh/my-topic' },
+    });
+    // The URL is a secret: stored encrypted and never returned.
+    const settings = (await app.inject('/api/settings')).json<SettingsResponse>();
+    expect(settings.settings.notifyWebhookUrl).toBe('');
+    expect(settings.secretsSet.notifyWebhookUrl).toBe(true);
+    expect((await app.inject({ method: 'POST', url: '/api/notifications/test' })).statusCode).toBe(
+      200,
+    );
+    expect(hooks.at(-1)).toMatchObject({
+      url: 'https://ntfy.sh/my-topic',
+      body: 'Notifications from DraxMax will arrive here.',
+    });
+
+    core.events.emit('torrent:done', { name: 'Some.Show.S01E01' } as never);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(hooks.at(-1)!.body).toBe('Some.Show.S01E01');
+    core.settings.update({ notifyOnComplete: false });
+    const n = hooks.length;
+    core.events.emit('torrent:done', { name: 'Quiet' } as never);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(hooks).toHaveLength(n);
+
+    const discord = webhookRequest(
+      'https://discord.com/api/webhooks/1/abc',
+      'Download complete',
+      'X',
+    );
+    expect(JSON.parse(discord.body)).toMatchObject({
+      content: 'Download complete\nX',
+      text: 'Download complete\nX',
+      title: 'Download complete',
+      message: 'X',
+    });
   });
 });

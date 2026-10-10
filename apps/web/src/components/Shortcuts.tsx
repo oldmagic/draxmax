@@ -6,6 +6,7 @@ import { useUi } from '@/stores/ui';
 
 const GO: Record<string, string> = {
   d: '/downloads',
+  f: '/search',
   u: '/upcoming',
   r: '/rss',
   i: '/sites',
@@ -38,6 +39,9 @@ export function Shortcuts() {
       } else if (e.key === '?') {
         e.preventDefault();
         openShortcuts();
+      } else if (e.key === '/') {
+        e.preventDefault();
+        navigate('/search');
       } else if (e.key === 'n') {
         e.preventDefault();
         openAdd();

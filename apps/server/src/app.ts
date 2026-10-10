@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket, { type WebSocket } from '@fastify/websocket';
@@ -13,6 +13,8 @@ import { rssRoutes } from './routes/rss.ts';
 import { mediaRoutes } from './routes/media.ts';
 import { settingsRoutes, type IdentityOptions } from './routes/settings.ts';
 import { siteRoutes } from './routes/sites.ts';
+import { searchRoutes } from './routes/search.ts';
+import { qbittorrentRoutes } from './routes/qbittorrent.ts';
 import { notificationRoutes } from './routes/notifications.ts';
 import { torrentRoutes } from './routes/torrents.ts';
 
@@ -70,6 +72,8 @@ const PUBLIC_API = new Set([
   '/api/auth/login',
   '/api/auth/logout',
   '/api/auth/setup',
+  // qBittorrent-compatible login for Sonarr/Radarr and friends.
+  '/api/v2/auth/login',
 ]);
 
 /** Live event fan-out to connected WebSocket clients. */
@@ -105,7 +109,13 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
           },
         }
       : (opts.logger ?? false);
-  const app = Fastify({ logger, bodyLimit: 24 * 1024 * 1024 });
+  // Per-request lines are debug-level (see onResponse): at info, a healthcheck a minute and
+  // every UI poll would fill the log of a server that runs for months.
+  const app = Fastify({
+    logger,
+    bodyLimit: 24 * 1024 * 1024,
+    logController: new LogController({ disableRequestLogging: true }),
+  });
   const startedAt = Date.now();
   const auth = new AuthService(core, { ...opts.auth, token: opts.token });
   app.decorate('auth', auth);
@@ -174,6 +184,13 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     }
   });
 
+  app.addHook('onResponse', async (req, reply) => {
+    req.log.debug(
+      { req, statusCode: reply.statusCode, ms: Math.round(reply.elapsedTime) },
+      'request completed',
+    );
+  });
+
   app.addHook('onSend', async (_req, reply, payload) => {
     reply.header('x-content-type-options', 'nosniff');
     reply.header('referrer-policy', 'no-referrer');
@@ -191,12 +208,36 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
   // --- WebSocket hub ----------------------------------------------------------
 
-  const clients = new Set<WebSocket>();
+  type Client = {
+    kind: 'token' | 'session' | 'local';
+    idHash: string | null;
+    /** Fell behind: gets a whole snapshot instead of the next delta. */
+    stale: boolean;
+  };
+  const clients = new Map<WebSocket, Client>();
+  /** A client this far behind isn't reading; stop queueing for it. */
+  const SKIP_BYTES = 1024 * 1024;
+  const DROP_BYTES = 16 * 1024 * 1024;
+
+  /** False when the socket is backed up (slow or stalled reader), so memory stays bounded. */
+  const writable = (ws: WebSocket, c: Client): boolean => {
+    if (ws.readyState !== ws.OPEN) return false;
+    if (ws.bufferedAmount > DROP_BYTES) {
+      ws.terminate();
+      return false;
+    }
+    if (ws.bufferedAmount > SKIP_BYTES) {
+      c.stale = true;
+      return false;
+    }
+    return true;
+  };
+
   const hub: Hub = {
     broadcast(event) {
       if (clients.size === 0) return;
       const msg = JSON.stringify(event);
-      for (const ws of clients) if (ws.readyState === ws.OPEN) ws.send(msg);
+      for (const [ws, c] of clients) if (writable(ws, c)) ws.send(msg);
     },
     get clientCount() {
       return clients.size;
@@ -204,14 +245,56 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   };
   app.decorate('hub', hub);
 
-  const snapshot = (): ServerEvent =>
-    // Dates serialise to ISO strings, matching the wire DTO.
-    JSON.parse(JSON.stringify({ type: 'torrents:snapshot', torrents: core.torrents.list() }));
+  // Torrent list: each torrent is serialised once per tick (Dates become ISO strings, the
+  // wire DTO) and only the ones that changed are sent.
+  let sent = new Map<string, string>();
+  let sentOrder = '';
+  const serialize = () => {
+    const now = new Map<string, string>();
+    for (const t of core.torrents.list()) now.set(t.id, JSON.stringify(t));
+    return now;
+  };
+  const snapshotMsg = (now: Map<string, string>) =>
+    `{"type":"torrents:snapshot","torrents":[${[...now.values()].join(',')}]}`;
 
-  app.get('/api/ws', { websocket: true }, (socket) => {
-    clients.add(socket);
-    socket.send(JSON.stringify(snapshot()));
+  const pushTorrents = () => {
+    if (clients.size === 0) return;
+    const now = serialize();
+    const changed: string[] = [];
+    for (const [id, json] of now) if (sent.get(id) !== json) changed.push(json);
+    const order = [...now.keys()];
+    const orderKey = order.join(',');
+    const delta =
+      changed.length || orderKey !== sentOrder
+        ? `{"type":"torrents:delta","changed":[${changed.join(',')}]${
+            orderKey !== sentOrder ? `,"order":${JSON.stringify(order)}` : ''
+          }}`
+        : null;
+    let full: string | null = null;
+    for (const [ws, c] of clients) {
+      if (!writable(ws, c)) continue;
+      if (c.stale) {
+        c.stale = false;
+        ws.send((full ??= snapshotMsg(now)));
+      } else if (delta) ws.send(delta);
+    }
+    sent = now;
+    sentOrder = orderKey;
+  };
+
+  app.get('/api/ws', { websocket: true }, (socket, req) => {
+    clients.set(socket, { ...auth.authKind(req), stale: false });
+    socket.send(snapshotMsg(serialize()));
     socket.on('close', () => clients.delete(socket));
+  });
+
+  // Signing out, or changing/creating/removing the login, also ends the live feeds that were
+  // opened under it; a socket would otherwise keep streaming until the tab is closed.
+  const offSessionEnd = auth.onSessionEnd((idHash) => {
+    for (const [ws, c] of clients) {
+      if (c.kind === 'token') continue;
+      if (idHash === null || c.idHash === idHash) ws.close(4401, 'Signed out');
+    }
   });
 
   const unsubscribers = [
@@ -219,12 +302,13 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     core.events.on('torrent:done', (t) =>
       hub.broadcast({ type: 'torrent:done', id: t.id, name: t.name }),
     ),
-    core.events.on('torrent:seeded', (t) =>
+    core.events.on('torrent:seeded', (t, { removed }) =>
       hub.broadcast({
         type: 'torrent:seeded',
         id: t.id,
         name: t.name,
         minutes: Math.round(t.seedingTime / 60),
+        removed,
       }),
     ),
     core.events.on('torrent:error', (t) =>
@@ -245,24 +329,29 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
       hub.broadcast({ type: 'notifications:updated', unread: e.unread, item: e.item }),
     ),
   ];
-  const timer = setInterval(() => {
-    if (clients.size > 0) hub.broadcast(snapshot());
-  }, opts.snapshotIntervalMs ?? 1000);
+  const timer = setInterval(pushTorrents, opts.snapshotIntervalMs ?? 1000);
 
   app.addHook('onClose', async () => {
     clearInterval(timer);
+    offSessionEnd();
     unsubscribers.forEach((off) => off());
-    for (const ws of clients) ws.close(1001, 'Server shutting down');
+    for (const ws of clients.keys()) ws.close(1001, 'Server shutting down');
   });
 
   // --- REST -------------------------------------------------------------------
 
-  app.get('/api/health', async (): Promise<HealthResponse> => ({
-    status: 'ok',
-    version: APP_VERSION,
-    uptime: Math.round((Date.now() - startedAt) / 1000),
-    torrents: core.torrents.list().length,
-  }));
+  // Public (Docker healthcheck, uptime monitors), so it says nothing about the instance
+  // unless the caller is signed in.
+  app.get('/api/health', async (req): Promise<HealthResponse | { status: 'ok' }> =>
+    auth.isAuthorized(req)
+      ? {
+          status: 'ok',
+          version: APP_VERSION,
+          uptime: Math.round((Date.now() - startedAt) / 1000),
+          torrents: core.torrents.count(),
+        }
+      : { status: 'ok' },
+  );
 
   await app.register(authRoutes, { auth });
   await app.register(torrentRoutes, { core });
@@ -271,6 +360,8 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   await app.register(mediaRoutes, { core });
   await app.register(fsRoutes, { core });
   await app.register(siteRoutes, { core });
+  await app.register(searchRoutes, { core });
+  await app.register(qbittorrentRoutes, { core, auth });
   await app.register(notificationRoutes, { core });
 
   app.all('/api/*', async (_req, reply) => reply.status(404).send({ error: 'Not found' }));
@@ -278,7 +369,16 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   // --- Web UI -----------------------------------------------------------------
 
   if (opts.webRoot && existsSync(opts.webRoot)) {
-    await app.register(fastifyStatic, { root: opts.webRoot });
+    await app.register(fastifyStatic, {
+      root: opts.webRoot,
+      // The build writes .br/.gz next to each file; hashed assets never change.
+      preCompressed: true,
+      setHeaders(res, path) {
+        if (/[\\/]assets[\\/]/.test(path))
+          res.header('cache-control', 'public, max-age=31536000, immutable');
+        else res.header('cache-control', 'no-cache');
+      },
+    });
     // SPA fallback: any non-API GET that isn't a file serves index.html.
     app.setNotFoundHandler((req, reply) => {
       if (req.method === 'GET' && !req.url.startsWith('/api/')) return reply.sendFile('index.html');

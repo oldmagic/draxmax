@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  ContentType,
   SiteDTO,
   SiteField,
   SiteInput,
@@ -48,6 +49,8 @@ interface SiteRow {
   name: string;
   preset: string | null;
   enabled: boolean;
+  contentTypes: ContentType[];
+  category: string | null;
   baseUrls: string[];
   searchUrls: string[];
   infoUrl: string;
@@ -155,6 +158,8 @@ export class SiteService {
       name: r.name as string,
       preset: (r.preset as string | null) ?? null,
       enabled: r.enabled === 1,
+      contentTypes: j<ContentType[]>(r.content_types, []),
+      category: (r.category as string | null) ?? null,
       baseUrls: j<string[]>(r.base_urls, []),
       searchUrls: j<string[]>(r.search_urls, []),
       infoUrl: r.info_url as string,
@@ -185,12 +190,13 @@ export class SiteService {
   private save(s: SiteRow): void {
     this.deps.db
       .prepare(
-        `INSERT INTO sites (id, name, preset, enabled, base_urls, search_urls, info_url, download_url, mapping, fields, secrets, last_test, created_at, updated_at, must_match, must_not_match)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sites (id, name, preset, enabled, base_urls, search_urls, info_url, download_url, mapping, fields, secrets, last_test, created_at, updated_at, must_match, must_not_match, content_types, category)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, preset = excluded.preset, enabled = excluded.enabled,
            base_urls = excluded.base_urls, search_urls = excluded.search_urls, info_url = excluded.info_url,
            download_url = excluded.download_url, mapping = excluded.mapping, fields = excluded.fields,
            must_match = excluded.must_match, must_not_match = excluded.must_not_match,
+           content_types = excluded.content_types, category = excluded.category,
            secrets = excluded.secrets, last_test = excluded.last_test, updated_at = excluded.updated_at`,
       )
       .run(
@@ -210,6 +216,8 @@ export class SiteService {
         s.updatedAt,
         JSON.stringify(s.mustMatch),
         JSON.stringify(s.mustNotMatch),
+        JSON.stringify(s.contentTypes),
+        s.category,
       );
     this.deps.events.emit('sites:updated', null);
   }
@@ -220,6 +228,8 @@ export class SiteService {
       name: s.name,
       preset: s.preset,
       enabled: s.enabled,
+      contentTypes: s.contentTypes,
+      category: s.category,
       baseUrls: s.baseUrls,
       searchUrls: s.searchUrls,
       infoUrl: s.infoUrl,
@@ -297,6 +307,8 @@ export class SiteService {
       name: v.name,
       preset: v.preset,
       enabled: v.enabled,
+      contentTypes: [...new Set(v.contentTypes)],
+      category: v.category || null,
       baseUrls: v.baseUrls,
       searchUrls: v.searchUrls,
       infoUrl: v.infoUrl,
@@ -529,6 +541,7 @@ export class SiteService {
       .map((s) => ({
         name: `Site: ${s.name}`,
         animeOnly: false,
+        types: s.contentTypes,
         search: async (query: string): Promise<SearchResult[]> => {
           let lastError: string | null = null;
           for (const template of s.searchUrls) {
@@ -556,6 +569,7 @@ export class SiteService {
                         seeders: h.seeders,
                         size: h.size,
                         source: `Site: ${s.name}`,
+                        ...(s.category ? { category: s.category } : {}),
                       },
                     ]
                   : [];

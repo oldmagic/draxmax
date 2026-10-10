@@ -4,7 +4,7 @@
  */
 
 export type TorrentStatus =
-  'downloading' | 'seeding' | 'paused' | 'queued' | 'error' | 'checking' | 'metadata';
+  'downloading' | 'seeding' | 'paused' | 'queued' | 'error' | 'checking' | 'metadata' | 'moving';
 
 export interface TorrentItem {
   id: string;
@@ -35,6 +35,8 @@ export interface TorrentItem {
   sequentialDownload: boolean;
   priority: number;
   error?: string;
+  /** Private torrent (BEP 27): no DHT/PEX, and public trackers are never added. */
+  private?: boolean;
 }
 
 export interface Tracker {
@@ -96,7 +98,15 @@ export interface DownloadRule {
   tags: string[];
   savePath?: string;
   addPaused: boolean;
+  /**
+   * Missing-episode search for this rule: follow the global setting, never search, fill
+   * gaps after the first episode owned, or fetch the whole season from episode 1.
+   */
+  missingMode?: MissingMode;
 }
+
+export type MissingMode = 'default' | 'off' | 'gaps' | 'all';
+export const MISSING_MODES = ['default', 'off', 'gaps', 'all'] as const;
 
 export interface LibraryEntry {
   id: string;

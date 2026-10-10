@@ -8,3 +8,11 @@ watch
 .git
 test-results
 playwright-report
+.env
+.github
+e2e
+examples
+*.md
+download_rules.json
+feeds.json
+apps/desktop

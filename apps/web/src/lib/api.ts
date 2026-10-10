@@ -21,6 +21,9 @@ import type {
   SiteInput,
   SitePresetDTO,
   SiteTestResult,
+  SearchResponse,
+  SearchSourceDTO,
+  ContentType,
   LibraryEntryDTO,
   AddMagnetRequest,
   AddTorrentFileRequest,
@@ -130,6 +133,8 @@ export const api = {
   recheck: (id: string) => request<TorrentDTO>('POST', `/api/torrents/${id}/recheck`),
   queue: (id: string, move: 'top' | 'up' | 'down' | 'bottom') =>
     request<TorrentDTO>('POST', `/api/torrents/${id}/queue`, { move }),
+  setLocation: (id: string, savePath: string, moveFiles: boolean) =>
+    request<TorrentDTO>('POST', `/api/torrents/${id}/location`, { savePath, moveFiles }),
   peers: (id: string) => request<PeerDTO[]>('GET', `/api/torrents/${id}/peers`),
   remove: (id: string, deleteFiles: boolean) =>
     request<undefined>('DELETE', `/api/torrents/${id}?deleteFiles=${deleteFiles}`),
@@ -144,8 +149,11 @@ export const api = {
 
   // Categories & tags
   categories: () => request<CategoryDTO[]>('GET', '/api/categories'),
-  saveCategory: (name: string, savePath: string | null) =>
-    request<CategoryDTO>('PUT', `/api/categories/${enc(name)}`, { savePath }),
+  saveCategory: (
+    name: string,
+    savePath: string | null,
+    limits: { seedMinutes?: number | null; seedRatio?: number | null } = {},
+  ) => request<CategoryDTO>('PUT', `/api/categories/${enc(name)}`, { savePath, ...limits }),
   deleteCategory: (name: string) => request<undefined>('DELETE', `/api/categories/${enc(name)}`),
   tags: () => request<string[]>('GET', '/api/tags'),
 
@@ -154,6 +162,33 @@ export const api = {
   restart: () => request<{ restarting: boolean }>('POST', '/api/system/restart'),
   patchSettings: (patch: Record<string, unknown>) =>
     request<SettingsResponse>('PATCH', '/api/settings', patch),
+  testNotification: () => request<{ ok: boolean }>('POST', '/api/notifications/test'),
+  /** The whole instance as one JSON file (needs the current password when a login exists). */
+  backup: async (password?: string): Promise<Blob> => {
+    const headers: Record<string, string> = {};
+    if (token) headers.authorization = `Bearer ${token}`;
+    if (password) headers['x-confirm-password'] = password;
+    const res = await fetch('/api/backup', { headers, credentials: 'same-origin' });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new ApiError(res.status, data.error ?? `${res.status} ${res.statusText}`);
+    }
+    return res.blob();
+  },
+  restoreBackup: async (file: Blob, password?: string): Promise<{ restarting: boolean }> => {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (token) headers.authorization = `Bearer ${token}`;
+    if (password) headers['x-confirm-password'] = password;
+    const res = await fetch('/api/backup/restore', {
+      method: 'POST',
+      headers,
+      credentials: 'same-origin',
+      body: file,
+    });
+    const data = (await res.json().catch(() => ({}))) as { error?: string; restarting?: boolean };
+    if (!res.ok) throw new ApiError(res.status, data.error ?? `${res.status} ${res.statusText}`);
+    return { restarting: data.restarting === true };
+  },
 
   // RSS
   feeds: () => request<FeedDTO[]>('GET', '/api/rss/feeds'),
@@ -198,6 +233,7 @@ export const api = {
     request<RssConfigSaveResult>('PUT', '/api/rss/config', cfg),
   setRuleFeeds: (body: Partial<RuleFeedsRequest> & { ids: string[] }) =>
     request<RuleFeedsResult>('POST', '/api/rss/rules/feeds', body),
+  suggestRule: (title: string) => request<RuleInput>('POST', '/api/rss/rules/suggest', { title }),
   previewRule: (r: RuleInput) => request<ArticleDTO[]>('POST', '/api/rss/rules/preview', r),
   notifications: (q: {
     unread?: boolean;
@@ -231,6 +267,24 @@ export const api = {
   deleteSite: (id: string) => request<undefined>('DELETE', `/api/sites/${id}`),
   testSite: (id: string, query: string) =>
     request<SiteTestResult>('POST', `/api/sites/${id}/test`, { query }),
+  // Search
+  search: (q: string, type?: ContentType | null) =>
+    request<SearchResponse>('GET', `/api/search?q=${enc(q)}${type ? `&type=${type}` : ''}`),
+  addSearchResult: (body: { id: string; category?: string; savePath?: string; paused?: boolean }) =>
+    request<TorrentDTO>('POST', '/api/search/add', body),
+  searchSources: () => request<SearchSourceDTO[]>('GET', '/api/search/sources'),
+  addTorznab: (url: string) =>
+    request<SearchSourceDTO[]>('POST', '/api/search/sources/torznab', { url }),
+  setSourceEnabled: (id: string, enabled: boolean) =>
+    request<SearchSourceDTO[]>('PATCH', `/api/search/sources/${enc(id)}`, { enabled }),
+  removeSource: (id: string) =>
+    request<SearchSourceDTO[]>('DELETE', `/api/search/sources/${enc(id)}`),
+  testSource: (id: string, query: string) =>
+    request<{ ok: boolean; total: number; sample: string[]; error: string | null }>(
+      'POST',
+      `/api/search/sources/${enc(id)}/test`,
+      { query },
+    ),
   missing: () => request<MissingResponse>('GET', '/api/missing'),
   checkMissing: (ruleIds?: string[]) =>
     request<MissingResponse>('POST', '/api/missing/check', ruleIds ? { ruleIds } : {}),

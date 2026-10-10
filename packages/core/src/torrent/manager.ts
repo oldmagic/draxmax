@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { statfs } from 'node:fs/promises';
 import parseTorrent, { type ParsedTorrent } from 'parse-torrent';
 import type {
   FilePriority,
@@ -21,6 +22,7 @@ import type {
 } from './engine.ts';
 import { parseMagnet, parseTorrentFile } from './sources.ts';
 import { deleteTorrentFiles } from './delete-files.ts';
+import { moveTorrentFiles } from './move-files.ts';
 import {
   isTrackerUrl,
   mergeTrackers,
@@ -77,7 +79,13 @@ interface Entry {
   rechecking: boolean;
   /** Being removed (seeding limit reached); skip further ticks. */
   removing?: boolean;
+  /** Its files are being moved to another folder; it restarts afterwards. */
+  moving?: boolean;
+  /** What the last periodic flush saw, so unchanged torrents aren't rewritten. */
+  savedSig?: string;
 }
+
+const samePath = (a: string, b: string) => a.replace(/[\\/]+$/, '') === b.replace(/[\\/]+$/, '');
 
 /**
  * Owns the torrent list: persistence, engine lifecycle, the download queue, and the mapping
@@ -100,7 +108,10 @@ export class TorrentManager {
     this.normalizeQueue();
     this.schedule();
     this.tickTimer = setInterval(() => this.tick(), TICK_INTERVAL_MS);
-    this.persistTimer = setInterval(() => this.persistAll(), PERSIST_INTERVAL_MS);
+    this.persistTimer = setInterval(() => {
+      this.persistAll();
+      void this.checkDiskSpace();
+    }, PERSIST_INTERVAL_MS);
     this.tickTimer.unref();
     this.persistTimer.unref();
   }
@@ -123,6 +134,7 @@ export class TorrentManager {
         totalSize: src.totalSize,
         files: src.files.map((f) => ({ ...f, downloaded: 0 })),
         filePriorities: src.files.map(() => DEFAULT_PRIORITY),
+        private: src.private,
       }),
       opts,
     );
@@ -137,6 +149,11 @@ export class TorrentManager {
   /** Current snapshots of all torrents in queue order. */
   list(): TorrentItem[] {
     return this.ordered().map((e) => this.toItem(e));
+  }
+
+  /** How many torrents are in the list. */
+  count(): number {
+    return this.entries.size;
   }
 
   /** Snapshot of one torrent. Throws `not_found`. */
@@ -156,11 +173,52 @@ export class TorrentManager {
   /** Restarts a paused or errored torrent (subject to the download queue). */
   resume(id: string): TorrentItem {
     const entry = this.entry(id);
+    // Stopped by a seeding limit and started again on purpose: let it seed.
+    if (entry.record.paused && entry.record.completedAt && this.seedLimitReached(entry))
+      entry.record.seedExempt = true;
     entry.record.paused = false;
     entry.record.error = null;
     this.deps.repo.save(entry.record);
     this.schedule();
     return this.toItem(entry);
+  }
+
+  /**
+   * Changes where a torrent's data lives. With `moveFiles` the files are moved there (a copy
+   * when it's another drive); without it the new folder is checked for existing data. While
+   * a download still sits in the "incomplete" folder, only its destination changes.
+   */
+  async setLocation(id: string, savePath: string, moveFiles = true): Promise<TorrentItem> {
+    const entry = this.entry(id);
+    const target = savePath.trim();
+    if (!target) throw new CoreError('invalid_input', 'Choose a folder');
+    if (entry.moving) throw new CoreError('conflict', 'This torrent is already being moved');
+    const { record } = entry;
+    if (record.completePath && !record.completedAt) {
+      record.completePath = samePath(target, record.savePath) ? null : target;
+      this.deps.repo.save(record);
+      return this.toItem(entry);
+    }
+    record.completePath = null;
+    if (samePath(target, record.savePath)) {
+      this.deps.repo.save(record);
+      return this.toItem(entry);
+    }
+    if (moveFiles) await this.relocate(entry, target);
+    else {
+      await this.stop(entry);
+      record.savePath = target;
+      record.bitfield = null;
+      entry.rechecking = true;
+      this.deps.repo.save(record);
+      this.schedule();
+    }
+    return this.toItem(entry);
+  }
+
+  /** True while a torrent's files are being moved. */
+  isMoving(id: string): boolean {
+    return this.entries.get(id)?.moving === true;
   }
 
   /** Pauses every running torrent. */
@@ -399,10 +457,19 @@ export class TorrentManager {
     const settings = this.deps.settings();
     const category = this.ensureCategory(opts.category);
     const categoryPath = category ? this.deps.categories.get(category)?.savePath : null;
-    const trackers = mergeTrackers(
-      sourceTrackers,
-      settings.addDefaultTrackers ? settings.defaultTrackers : [],
-    );
+    const own = mergeTrackers(sourceTrackers);
+    const ownKeys = new Set(own.map(normalizeTrackerUrl));
+    // Private torrents (BEP 27) must only announce to their own tracker. A magnet's flag
+    // isn't known yet, so its defaults are marked and dropped again if it turns out private.
+    const defaults =
+      settings.addDefaultTrackers && !extra.private
+        ? mergeTrackers(settings.defaultTrackers).filter(
+            (u) => !ownKeys.has(normalizeTrackerUrl(u)),
+          )
+        : [];
+    const finalPath = opts.savePath ?? categoryPath ?? settings.downloadPath;
+    const incomplete = settings.incompletePath;
+    const staged = incomplete !== '' && !samePath(incomplete, finalPath);
     const lastPos = Math.max(-1, ...[...this.entries.values()].map((e) => e.record.priority));
     return {
       id: randomUUID(),
@@ -410,7 +477,10 @@ export class TorrentManager {
       name,
       magnetURI: null,
       torrentFile: null,
-      savePath: opts.savePath ?? categoryPath ?? settings.downloadPath,
+      savePath: staged ? incomplete : finalPath,
+      completePath: staged ? finalPath : null,
+      private: false,
+      seedExempt: false,
       paused: opts.paused ?? false,
       addedAt: new Date().toISOString(),
       completedAt: null,
@@ -420,7 +490,10 @@ export class TorrentManager {
       priority: lastPos + 1,
       filePriorities: [],
       files: [],
-      trackers: trackers.map((url) => ({ url, enabled: true })),
+      trackers: [
+        ...own.map((url) => ({ url, enabled: true })),
+        ...defaults.map((url) => ({ url, enabled: true, auto: true })),
+      ],
       bitfield: null,
       uploadedBase: 0,
       downloadedBase: 0,
@@ -450,7 +523,7 @@ export class TorrentManager {
   }
 
   private wantsToRun(entry: Entry): boolean {
-    return !entry.record.paused && !entry.record.error;
+    return !entry.record.paused && !entry.record.error && !entry.moving;
   }
 
   /**
@@ -520,7 +593,102 @@ export class TorrentManager {
     record.files = stats.files;
     record.filePriorities = this.prioritiesFor(record, stats.files.length);
     handle.setFilePriorities(record.filePriorities);
+    if (stats.private && !record.private) {
+      record.private = true;
+      const kept = record.trackers.filter((t) => !t.auto);
+      if (kept.length !== record.trackers.length) {
+        record.trackers = kept;
+        // Restart so the engine stops announcing to the public trackers.
+        void this.applyTrackerChange(entry);
+        return;
+      }
+    }
     this.deps.repo.save(record);
+  }
+
+  /** Stops the torrent, moves its files to `target` and lets it start again from there. */
+  private async relocate(entry: Entry, target: string): Promise<void> {
+    const { record } = entry;
+    entry.moving = true;
+    try {
+      await this.stop(entry);
+      await moveTorrentFiles(
+        record.savePath,
+        target,
+        record.files.map((f) => f.path),
+      );
+      record.savePath = target;
+      this.deps.repo.save(record);
+    } catch (err) {
+      entry.moving = false;
+      this.fail(
+        entry,
+        new Error(`Could not move the files to ${target}: ${(err as Error).message}`),
+      );
+      throw new CoreError('invalid_input', `Could not move the files: ${(err as Error).message}`);
+    } finally {
+      entry.moving = false;
+    }
+    this.schedule();
+  }
+
+  /** A finished download leaves the "incomplete" folder for its real save folder. */
+  private async moveWhenDone(entry: Entry): Promise<void> {
+    const target = entry.record.completePath;
+    if (!target) return;
+    try {
+      await this.relocate(entry, target);
+    } catch {
+      return; // Reported on the torrent by relocate().
+    }
+    if (!this.entries.has(entry.record.id)) return;
+    entry.record.completePath = null;
+    this.deps.repo.save(entry.record);
+    this.deps.events.emit('torrent:done', this.toItem(entry));
+  }
+
+  /** Category limits win over the global ones; 0 means no limit. */
+  private seedLimitReached(entry: Entry, stats?: EngineTorrentStats): boolean {
+    const { record } = entry;
+    if (record.seedExempt) return false;
+    const s = this.deps.settings();
+    const cat = record.category ? this.deps.categories.get(record.category) : null;
+    const minutes = cat?.seedMinutes ?? s.seedTimeLimitMinutes;
+    const ratio = cat?.seedRatio ?? s.seedRatioLimit;
+    if (minutes > 0 && record.seedingSeconds >= minutes * 60) return true;
+    if (ratio <= 0) return false;
+    const { wanted } = this.wantedBytes(record, this.currentFiles(entry, stats));
+    return wanted > 0 && (record.uploadedBase + (stats?.uploaded ?? 0)) / wanted >= ratio;
+  }
+
+  /** Seeding limit reached: stop it, or drop it from the list (files are kept either way). */
+  private async onSeedLimit(entry: Entry): Promise<void> {
+    if (this.deps.settings().seedLimitAction === 'remove') return this.removeSeeded(entry);
+    entry.record.paused = true;
+    await this.stop(entry);
+    this.deps.events.emit('torrent:seeded', this.toItem(entry), { removed: false });
+    this.schedule();
+  }
+
+  /** Stops downloads on drives that are almost full, before writes start failing. */
+  private async checkDiskSpace(): Promise<void> {
+    const mb = this.deps.settings().minFreeSpaceMb;
+    if (mb <= 0) return;
+    const byPath = new Map<string, Entry[]>();
+    for (const e of this.entries.values()) {
+      if (!e.handle || e.record.completedAt || e.moving) continue;
+      byPath.set(e.record.savePath, [...(byPath.get(e.record.savePath) ?? []), e]);
+    }
+    for (const [path, entries] of byPath) {
+      const free = await statfs(path).then(
+        (s) => s.bavail * s.bsize,
+        () => null,
+      );
+      if (free === null || free >= mb * 1024 * 1024) continue;
+      for (const e of entries)
+        if (e.handle && !e.record.completedAt)
+          this.fail(e, new Error(`Stopped: less than ${mb} MB free in ${path}`));
+    }
   }
 
   /** Stops the engine torrent, folding session counters into the persisted totals. */
@@ -565,11 +733,21 @@ export class TorrentManager {
     entry.record.torrentFile ??= handle.torrentFile();
   }
 
+  /**
+   * Flushes resume data of running torrents. Stopped ones were saved when they stopped, and
+   * a running torrent that hasn't transferred anything since the last flush is skipped.
+   */
   private persistAll(): void {
-    const records = [...this.entries.values()].map((entry) => {
-      if (entry.handle) this.captureResumeData(entry, entry.handle);
-      return this.withSessionCounters(entry);
-    });
+    const records: TorrentRecord[] = [];
+    for (const entry of this.entries.values()) {
+      if (!entry.handle) continue;
+      const s = entry.handle.stats();
+      const sig = `${s.downloaded}|${s.received}|${s.uploaded}|${s.ready}|${Math.floor(entry.record.seedingSeconds / 300)}`;
+      if (sig === entry.savedSig) continue;
+      entry.savedSig = sig;
+      this.captureResumeData(entry, entry.handle);
+      records.push(this.withSessionCounters(entry));
+    }
     if (records.length) this.deps.repo.saveMany(records);
   }
 
@@ -592,32 +770,36 @@ export class TorrentManager {
     // Clamp so a suspended machine or stalled event loop doesn't count as seeding.
     const elapsed = Math.min(Math.max(0, now - this.lastTickAt), 5 * TICK_INTERVAL_MS) / 1000;
     this.lastTickAt = now;
-    const limit = this.deps.settings().seedTimeLimitMinutes * 60;
     for (const entry of this.entries.values()) {
-      if (!entry.handle || entry.removing) continue;
-      if (this.status(entry, entry.handle.stats()) === 'seeding') {
+      if (!entry.handle || entry.removing || entry.moving) continue;
+      const stats = entry.handle.stats();
+      if (this.status(entry, stats) === 'seeding') {
         entry.record.seedingSeconds += elapsed;
-        if (limit > 0 && entry.record.seedingSeconds >= limit) {
-          void this.removeSeeded(entry);
+        if (entry.record.completedAt && this.seedLimitReached(entry, stats)) {
+          void this.onSeedLimit(entry);
           continue;
         }
       }
-      const ready = entry.handle.stats().ready;
+      const ready = stats.ready;
       if (ready && entry.rechecking) {
         entry.rechecking = false;
-        entry.record.completedAt = this.isComplete(entry)
+        entry.record.completedAt = this.isComplete(entry, stats)
           ? (entry.record.completedAt ?? new Date().toISOString())
           : null;
         this.deps.repo.save(this.withSessionCounters(entry));
         changed = true;
         continue;
       }
-      if (entry.record.completedAt || !ready || !this.isComplete(entry)) continue;
+      if (entry.record.completedAt || !ready || !this.isComplete(entry, stats)) continue;
       entry.record.completedAt = new Date().toISOString();
       this.captureResumeData(entry, entry.handle);
       this.deps.repo.save(this.withSessionCounters(entry));
-      this.deps.events.emit('torrent:done', this.toItem(entry));
       changed = true;
+      if (entry.record.completePath) {
+        void this.moveWhenDone(entry);
+        continue;
+      }
+      this.deps.events.emit('torrent:done', this.toItem(entry));
     }
     // A finished download frees a queue slot.
     if (changed) this.schedule();
@@ -629,7 +811,7 @@ export class TorrentManager {
     const item = this.toItem(entry);
     try {
       await this.remove(entry.record.id, false);
-      this.deps.events.emit('torrent:seeded', item);
+      this.deps.events.emit('torrent:seeded', item, { removed: true });
     } catch {
       entry.removing = false;
     }
@@ -643,14 +825,13 @@ export class TorrentManager {
   }
 
   /** Live file stats when the engine has metadata, otherwise the last persisted snapshot. */
-  private currentFiles(entry: Entry): EngineFileStats[] {
-    const live = entry.handle?.stats();
+  private currentFiles(entry: Entry, live = entry.handle?.stats()): EngineFileStats[] {
     return live?.hasMetadata ? live.files : entry.record.files;
   }
 
   /** All wanted (priority > 0) bytes are verified. */
-  private isComplete(entry: Entry): boolean {
-    const files = this.currentFiles(entry);
+  private isComplete(entry: Entry, stats?: EngineTorrentStats): boolean {
+    const files = this.currentFiles(entry, stats);
     if (files.length === 0) return false;
     const { wanted, have } = this.wantedBytes(entry.record, files);
     return have >= wanted;
@@ -695,7 +876,7 @@ export class TorrentManager {
     const uploaded = record.uploadedBase + (stats?.uploaded ?? 0);
     const downloadedNet = record.downloadedBase + (stats?.received ?? 0);
 
-    const fileStats = this.currentFiles(entry);
+    const fileStats = this.currentFiles(entry, stats);
     const files: TorrentFile[] = fileStats.map((f, i) => {
       const priority = record.filePriorities[i] ?? DEFAULT_PRIORITY;
       return {
@@ -718,7 +899,7 @@ export class TorrentManager {
       id: record.id,
       infoHash: record.infoHash,
       name: record.name,
-      savePath: record.savePath,
+      savePath: record.completePath ?? record.savePath,
       status: this.status(entry, stats),
       progress: Math.min(1, progress),
       downloadSpeed,
@@ -742,10 +923,12 @@ export class TorrentManager {
     if (record.category) item.category = record.category;
     if (record.completedAt) item.completedAt = new Date(record.completedAt);
     if (record.error) item.error = record.error;
+    if (record.private) item.private = true;
     return item;
   }
 
   private status(entry: Entry, stats: EngineTorrentStats | undefined): TorrentStatus {
+    if (entry.moving) return 'moving';
     if (entry.record.error) return 'error';
     if (entry.record.paused) return 'paused';
     if (!stats) {
@@ -754,7 +937,7 @@ export class TorrentManager {
     }
     if (!stats.hasMetadata) return 'metadata';
     if (!stats.ready) return 'checking';
-    if (this.isComplete(entry)) return 'seeding';
+    if (this.isComplete(entry, stats)) return 'seeding';
     return 'downloading';
   }
 }

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   CoreError,
@@ -87,6 +87,46 @@ export async function settingsRoutes(
     }
     core.settings.update(patch as Partial<Settings>);
     return settingsResponse(core, auth, identity);
+  });
+
+  app.post('/api/notifications/test', async () => {
+    try {
+      await core.webhook.send('DraxMax test', 'Notifications from DraxMax will arrive here.');
+    } catch (err) {
+      throw new CoreError('invalid_input', (err as Error).message);
+    }
+    return { ok: true };
+  });
+
+  // The backup holds the password hash, the secret key and tracker passkeys: like changing
+  // the login, it needs the current password again, not just a session.
+  const confirm = (req: FastifyRequest): void => {
+    const password = (req.headers['x-confirm-password'] as string | undefined) ?? undefined;
+    const check = auth.confirmCurrent(req, password);
+    if (check === 'rate_limited')
+      throw Object.assign(new Error('Too many attempts. Try again in a minute.'), {
+        statusCode: 429,
+      });
+    if (check !== 'ok')
+      throw Object.assign(new Error('Current password is wrong'), { statusCode: 403 });
+  };
+
+  app.get('/api/backup', async (req, reply) => {
+    confirm(req);
+    auth.security('info', `Backup downloaded from ${req.ip}`);
+    const stamp = new Date().toISOString().slice(0, 10);
+    return reply
+      .header('content-disposition', `attachment; filename="draxmax-backup-${stamp}.json"`)
+      .header('cache-control', 'no-store')
+      .send(core.backup.create());
+  });
+
+  app.post('/api/backup/restore', { bodyLimit: 256 * 1024 * 1024 }, async (req, reply) => {
+    confirm(req);
+    core.backup.stageRestore(req.body);
+    auth.security('warning', `Backup restore started from ${req.ip}`);
+    if (identity?.restart) setTimeout(identity.restart, 300).unref();
+    return reply.status(202).send({ restarting: !!identity?.restart });
   });
 
   app.post('/api/system/restart', async (_req, reply) => {

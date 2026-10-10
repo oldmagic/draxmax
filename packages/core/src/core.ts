@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { openDatabase, type Database } from './db/database.ts';
+import { applyPendingRestore, createBackup, stageRestore, type BackupBundle } from './backup.ts';
 import { CategoryRepository, type Category } from './db/category-repo.ts';
 import { TorrentRepository } from './db/torrent-repo.ts';
 import { CoreError } from './errors.ts';
@@ -14,6 +15,8 @@ import { MissingService, type MissingDeps } from './missing/missing-service.ts';
 import { SiteService, type SiteFetch } from './sites/site-service.ts';
 import { NotificationService } from './notifications/notification-service.ts';
 import { wireNotifications } from './notifications/notifier.ts';
+import { WebhookNotifier, type WebhookSend } from './notifications/webhook.ts';
+import { SearchService } from './search/search-service.ts';
 import { fileKeyCipher } from './settings/secret-cipher.ts';
 import { SettingsStore, type SecretCipher } from './settings/settings.ts';
 import type { TorrentEngine } from './torrent/engine.ts';
@@ -36,6 +39,8 @@ export interface CoreOptions {
   missingFetch?: Pick<MissingDeps, 'fetchText' | 'fetchTorrent'>;
   /** Network override for site searches (tests). */
   siteFetch?: SiteFetch;
+  /** Network override for the notification webhook (tests). */
+  webhookSend?: WebhookSend;
   /** Don't start background schedulers and don't pace metadata APIs (tests). */
   noSchedulers?: boolean;
 }
@@ -52,11 +57,15 @@ export interface Core {
   rss: RssService;
   missing: MissingService;
   sites: SiteService;
+  search: SearchService;
+  webhook: WebhookNotifier;
   notifications: NotificationService;
   upcoming: UpcomingService;
   stats: StatsService;
   watch: WatchFolder;
   categories: CategoryService;
+  /** Whole-instance backup; a staged restore replaces the config on the next start. */
+  backup: { create(): BackupBundle; stageRestore(bundle: unknown): void };
   settings: SettingsStore;
   events: CoreEvents;
   engine: TorrentEngine;
@@ -79,6 +88,7 @@ export function createCore(opts: CoreOptions): Core {
   } catch {
     // Not ours to change (e.g. a read-only mount point): the files themselves are 0600.
   }
+  const restored = applyPendingRestore(opts.configPath);
   const cipher = opts.cipher ?? fileKeyCipher(join(opts.configPath, 'secret.key'));
   const settings = new SettingsStore(
     join(opts.configPath, 'settings.json'),
@@ -92,6 +102,14 @@ export function createCore(opts: CoreOptions): Core {
   const events = new CoreEvents();
   const notifications = new NotificationService({ db, events, settings: () => settings.get() });
   const unwireNotifications = wireNotifications(events, notifications);
+  if (restored)
+    notifications.add({
+      category: 'system',
+      level: 'success',
+      title: 'Backup restored',
+      body: 'The previous settings and database were kept in the config folder under before-restore.',
+      link: '/settings',
+    });
   let engineFailure: Error | null = null;
   events.on('engine:fatal', (err) => (engineFailure ??= err));
 
@@ -144,6 +162,45 @@ export function createCore(opts: CoreOptions): Core {
   });
   if (!opts.noSchedulers) missing.start();
 
+  const search = new SearchService({ missing, sites, torrents, settings });
+  const webhook = new WebhookNotifier({
+    events,
+    settings: () => settings.get(),
+    ...(opts.webhookSend ? { send: opts.webhookSend } : {}),
+    onError: (message) =>
+      notifications.add({
+        category: 'system',
+        level: 'warning',
+        title: 'Notifications could not be sent',
+        body: message,
+        link: '/settings',
+        dedupeKey: 'webhook',
+      }),
+  });
+
+  // Scheduled speed limits: between the two times of day the alternative limits apply.
+  const minutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3));
+  let appliedLimits = '';
+  const applyLimits = () => {
+    const s = settings.get();
+    const now = new Date();
+    const t = now.getHours() * 60 + now.getMinutes();
+    const from = minutes(s.altSpeedFrom);
+    const to = minutes(s.altSpeedTo);
+    // A window that ends before it starts runs over midnight.
+    const inWindow = from <= to ? t >= from && t < to : t >= from || t < to;
+    const alt = s.altSpeedEnabled && from !== to && inWindow;
+    const down = alt ? s.altDownloadLimit : s.downloadLimit;
+    const up = alt ? s.altUploadLimit : s.uploadLimit;
+    if (appliedLimits === `${down}|${up}`) return;
+    appliedLimits = `${down}|${up}`;
+    engine.setRateLimits(down, up);
+  };
+  appliedLimits = `${settings.get().downloadLimit}|${settings.get().uploadLimit}`;
+  applyLimits();
+  const limitTimer = opts.noSchedulers ? null : setInterval(applyLimits, 30_000);
+  limitTimer?.unref();
+
   const upcoming = new UpcomingService({
     db,
     torrents,
@@ -164,7 +221,12 @@ export function createCore(opts: CoreOptions): Core {
     save(c) {
       const name = c.name.trim();
       if (!name || name.length > 100) throw new CoreError('invalid_input', 'Invalid category name');
-      const saved = { name, savePath: c.savePath?.trim() || null };
+      const saved = {
+        name,
+        savePath: c.savePath?.trim() || null,
+        seedMinutes: c.seedMinutes ?? null,
+        seedRatio: c.seedRatio ?? null,
+      };
       categoryRepo.save(saved);
       return saved;
     },
@@ -186,6 +248,8 @@ export function createCore(opts: CoreOptions): Core {
           'runAsUid',
           'runAsGid',
           'firstRunCompleted',
+          // Changed from the Sites page, which reports it there.
+          'torznabUrls',
         ].includes(k),
     );
     if (shown.length)
@@ -197,11 +261,24 @@ export function createCore(opts: CoreOptions): Core {
         link: '/settings',
         dedupeKey: `settings:${shown.join(',')}`,
       });
-    if (changed.includes('downloadLimit') || changed.includes('uploadLimit')) {
-      engine.setRateLimits(s.downloadLimit, s.uploadLimit);
-    }
+    if (
+      changed.some((k) =>
+        [
+          'downloadLimit',
+          'uploadLimit',
+          'altSpeedEnabled',
+          'altDownloadLimit',
+          'altUploadLimit',
+          'altSpeedFrom',
+          'altSpeedTo',
+        ].includes(k),
+      )
+    )
+      applyLimits();
     if (changed.includes('maxActiveDownloads')) torrents.reschedule();
     if (changed.includes('downloadPath')) mkdirSync(s.downloadPath, { recursive: true });
+    if (changed.includes('incompletePath') && s.incompletePath)
+      mkdirSync(s.incompletePath, { recursive: true });
     // New credentials or sources: refresh the Upcoming lists.
     if (
       ['tmdbApiKey', 'anilistEnabled', 'anilistToken', 'libraryFolders'].some((k) =>
@@ -227,11 +304,17 @@ export function createCore(opts: CoreOptions): Core {
     rss,
     missing,
     sites,
+    search,
+    webhook,
     notifications,
     upcoming,
     stats,
     watch,
     categories,
+    backup: {
+      create: () => createBackup(db, opts.configPath),
+      stageRestore: (bundle) => stageRestore(opts.configPath, bundle),
+    },
     settings,
     events,
     engine,
@@ -242,6 +325,8 @@ export function createCore(opts: CoreOptions): Core {
       closed = true;
       rss.stop();
       missing.stop();
+      webhook.stop();
+      if (limitTimer) clearInterval(limitTimer);
       unwireNotifications();
       upcoming.stop();
       stats.stop();

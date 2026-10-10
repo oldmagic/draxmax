@@ -24,6 +24,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
+import { Link } from 'wouter';
 import { toast } from 'sonner';
 import { APP_VERSION, type SettingsResponse } from '@draxmax/shared';
 import { Badge } from '@/components/ui/badge';
@@ -124,13 +125,52 @@ export function SettingsPage() {
               min={0}
               max={1000}
             />
+            <PathField
+              ctx={ctx}
+              k="incompletePath"
+              label="Folder for unfinished downloads"
+              hint="Optional. Downloads are kept here and moved to their save folder when they finish, so media folders only ever see complete files."
+              optional
+            />
+            <PathField
+              ctx={ctx}
+              k="watchPath"
+              label="Watch folder"
+              hint="Optional. .torrent and .magnet files dropped here are added automatically."
+              optional
+            />
+            <NumberField
+              ctx={ctx}
+              k="minFreeSpaceMb"
+              label="Stop downloading when free space drops below"
+              hint="Keeps a full disk from breaking downloads and everything else on the drive. 0 = never stop."
+              unit="MB"
+              min={0}
+              max={10000000}
+            />
             <NumberField
               ctx={ctx}
               k="seedTimeLimitMinutes"
-              label="Seeding time limit (minutes)"
-              hint="After a finished torrent has seeded this long, it is removed from the list. Its files are kept. Paused time doesn't count. 0 = seed forever."
+              label="Stop seeding after"
+              hint="How long a finished torrent seeds. Paused time doesn't count. 0 = no time limit."
+              unit="minutes"
               min={0}
               max={525600}
+            />
+            <RatioField
+              ctx={ctx}
+              k="seedRatioLimit"
+              label="Stop seeding at ratio"
+              hint="Uploaded ÷ size, e.g. 2 = uploaded twice. Whichever limit is reached first applies. 0 = no ratio limit."
+            />
+            <SelectField
+              ctx={ctx}
+              k="seedLimitAction"
+              label="When a seeding limit is reached"
+              options={[
+                ['pause', 'Stop the torrent, keep it in the list'],
+                ['remove', 'Remove it from the list (files are kept)'],
+              ]}
             />
             <Categories />
             <RunAs ctx={ctx} identity={data.identity} />
@@ -182,6 +222,19 @@ export function SettingsPage() {
           <Section id="speed" title="Speed limits" icon={<Gauge />}>
             <SpeedField ctx={ctx} k="downloadLimit" label="Download limit" />
             <SpeedField ctx={ctx} k="uploadLimit" label="Upload limit" />
+            <SwitchField
+              ctx={ctx}
+              k="altSpeedEnabled"
+              label="Different limits at certain hours"
+              hint="For example, slow down during the day and run at full speed at night."
+            />
+            {Boolean(s.altSpeedEnabled) && (
+              <>
+                <TimeRangeField ctx={ctx} />
+                <SpeedField ctx={ctx} k="altDownloadLimit" label="Download limit in those hours" />
+                <SpeedField ctx={ctx} k="altUploadLimit" label="Upload limit in those hours" />
+              </>
+            )}
           </Section>
           <Section id="trackers" title="Trackers" icon={<Tags />}>
             <ListField
@@ -229,15 +282,24 @@ export function SettingsPage() {
               min={1}
               max={168}
             />
-            <SwitchField ctx={ctx} k="missingUseNyaa" label="Search Nyaa (anime)" />
-            <SwitchField ctx={ctx} k="missingUseAnimeTosho" label="Search AnimeTosho (anime)" />
-            <SecretField
+            <SelectField
               ctx={ctx}
-              isSet={data.secretsSet.torznabUrls ?? false}
-              k="torznabUrls"
-              label="Torznab indexers"
-              hint="Prowlarr or Jackett feed URLs including apikey=, separated by spaces. Needed for live-action TV and private trackers."
+              k="missingWhenEmpty"
+              label="When a rule's folder has no episodes yet"
+              hint="Each rule can override this (RSS → rule → Missing episodes)."
+              options={[
+                ['wait', 'Wait for the first episode from RSS'],
+                ['download', 'Download the season from episode 1'],
+              ]}
             />
+            <p className="text-xs text-muted">
+              Where missing episodes are searched (Nyaa, AnimeTosho, Torznab indexers and your
+              tracker sites) is set on the{' '}
+              <Link href="/sites" className="text-accent hover:underline">
+                Sites
+              </Link>{' '}
+              page.
+            </p>
             <NumberField
               ctx={ctx}
               k="missingMinSeeders"
@@ -300,6 +362,28 @@ export function SettingsPage() {
             <SwitchField ctx={ctx} k="notifyOnComplete" label="When a download finishes" />
             <SwitchField ctx={ctx} k="notifyOnError" label="When a torrent fails" />
             <SwitchField ctx={ctx} k="notifyOnRssMatch" label="When an RSS rule adds a torrent" />
+            <SecretField
+              ctx={ctx}
+              isSet={data.secretsSet.notifyWebhookUrl ?? false}
+              k="notifyWebhookUrl"
+              label="Also send them to your phone or chat"
+              hint="Paste a notification URL: an ntfy topic (https://ntfy.sh/your-topic), a Discord webhook, a Telegram bot URL (…/sendMessage?chat_id=…), or anything that accepts a JSON POST. Failed logins are sent too."
+            />
+            {(data.secretsSet.notifyWebhookUrl ?? false) && (
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    void api.testNotification().then(
+                      () => toast.success('Test notification sent'),
+                      (err: Error) => toast.error(err.message),
+                    )
+                  }
+                >
+                  <Bell /> Send a test
+                </Button>
+              </div>
+            )}
             <NumberField
               ctx={ctx}
               k="notificationRetentionDays"
@@ -361,6 +445,10 @@ export function SettingsPage() {
                 l,
                 l[0]!.toUpperCase() + l.slice(1),
               ])}
+            />
+            <BackupRestore
+              canRestart={data.identity.canRestart}
+              needsPassword={data.authConfigured}
             />
             <div className="flex items-center justify-between gap-3">
               <div className="text-sm">First-run setup</div>
@@ -553,6 +641,175 @@ function SpeedField({ ctx, k, label }: { ctx: FieldCtx; k: string; label: string
   );
 }
 
+/** A decimal number such as a share ratio; saves on blur / Enter. */
+function RatioField({
+  ctx,
+  k,
+  label,
+  hint,
+}: {
+  ctx: FieldCtx;
+  k: string;
+  label: string;
+  hint?: ReactNode;
+}) {
+  const value = Number(ctx.s[k] ?? 0);
+  const [draft, setDraft] = useDraft(value > 0 ? String(value) : '');
+  const commit = () => {
+    const n = draft.trim() === '' ? 0 : Number(draft.replace(',', '.'));
+    if (!Number.isFinite(n) || n < 0) return toast.error(`${label}: enter a number such as 1.5`);
+    if (n !== value) ctx.save({ [k]: n });
+  };
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <Label ctx={ctx} k={k} label={label} hint={hint} />
+      <Input
+        inputMode="decimal"
+        aria-label={label}
+        placeholder="No limit"
+        value={draft}
+        disabled={ctx.locked.has(k)}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => e.key === 'Enter' && commit()}
+        className="h-9 w-32"
+      />
+    </div>
+  );
+}
+
+function TimeRangeField({ ctx }: { ctx: FieldCtx }) {
+  const time = (k: string, label: string) => (
+    <Input
+      type="time"
+      aria-label={label}
+      value={String(ctx.s[k] ?? '')}
+      disabled={ctx.locked.has(k)}
+      onChange={(e) => e.target.value && ctx.save({ [k]: e.target.value })}
+      className="h-9 w-32"
+    />
+  );
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <Label ctx={ctx} k="altSpeedFrom" label="Hours" hint="Server time. May run past midnight." />
+      <div className="flex items-center gap-2 text-sm text-muted">
+        {time('altSpeedFrom', 'From')} to {time('altSpeedTo', 'Until')}
+      </div>
+    </div>
+  );
+}
+
+/** One file with everything: settings, rules, feeds, sites, torrents and history. */
+function BackupRestore({
+  canRestart,
+  needsPassword,
+}: {
+  canRestart: boolean;
+  needsPassword: boolean;
+}) {
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const token = desktop !== null;
+  const askPassword = needsPassword && !token;
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await fn();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const download = () =>
+    run(async () => {
+      const blob = await api.backup(password || undefined);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `draxmax-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast.success('Backup downloaded. Keep it private: it contains your passkeys.');
+    });
+  const restore = (file: File) =>
+    run(async () => {
+      const { restarting } = await api.restoreBackup(file, password || undefined);
+      setRestoreFile(null);
+      toast.success(
+        restarting
+          ? 'Backup accepted. DraxMax is restarting with it…'
+          : 'Backup accepted. Restart DraxMax to finish restoring.',
+      );
+      if (restarting) setTimeout(() => location.reload(), 6000);
+    });
+  return (
+    <div className="space-y-2">
+      <div className="text-sm">Backup and restore</div>
+      <div className="text-xs text-muted">
+        One file with your settings, rules, feeds, sites, torrents and history. Restoring replaces
+        everything{canRestart ? ' and restarts DraxMax' : ' the next time DraxMax starts'}; what was
+        there before is kept in the config folder under <code>before-restore</code>.
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {askPassword && (
+          <Input
+            type="password"
+            autoComplete="current-password"
+            aria-label="Current password"
+            placeholder="Current password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="h-9 w-48"
+          />
+        )}
+        <Button
+          size="sm"
+          disabled={busy || (askPassword && !password)}
+          onClick={() => void download()}
+        >
+          <Download /> Download backup
+        </Button>
+        <label
+          className={cn(
+            'inline-flex h-8 cursor-pointer items-center gap-2 rounded-xl border px-3 text-sm hover:bg-surface-hover',
+            (busy || (askPassword && !password)) && 'pointer-events-none opacity-50',
+          )}
+        >
+          <RotateCcw className="size-4" /> Restore from file…
+          <input
+            type="file"
+            accept="application/json,.json"
+            className="sr-only"
+            onChange={(e) => {
+              setRestoreFile(e.target.files?.[0] ?? null);
+              e.target.value = '';
+            }}
+          />
+        </label>
+      </div>
+      {restoreFile && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl bg-surface-2 px-3 py-2 text-sm">
+          <span className="min-w-0 flex-1 truncate">
+            Replace everything with <span className="font-medium">{restoreFile.name}</span>?
+          </span>
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={busy}
+            onClick={() => void restore(restoreFile)}
+          >
+            Restore
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setRestoreFile(null)}>
+            Cancel
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TextField(props: {
   ctx: FieldCtx;
   k: string;
@@ -580,16 +837,31 @@ function TextField(props: {
   );
 }
 
-function PathField({ ctx, k, label }: { ctx: FieldCtx; k: string; label: string }) {
+function PathField({
+  ctx,
+  k,
+  label,
+  hint,
+  optional,
+}: {
+  ctx: FieldCtx;
+  k: string;
+  label: string;
+  hint?: ReactNode;
+  /** May be left empty (turns the feature off). */
+  optional?: boolean;
+}) {
   const [draft, setDraft] = useDraft(String(ctx.s[k] ?? ''));
-  const commit = (v = draft) => v.trim() && v !== ctx.s[k] && ctx.save({ [k]: v.trim() });
+  const commit = (v = draft) =>
+    (optional || v.trim()) && v.trim() !== ctx.s[k] && ctx.save({ [k]: v.trim() });
   return (
     <div className="space-y-1.5">
-      <Label ctx={ctx} k={k} label={label} />
+      <Label ctx={ctx} k={k} label={label} hint={hint} />
       <div className="flex gap-2">
         <Input
           aria-label={label}
           value={draft}
+          placeholder={optional ? 'Off' : undefined}
           disabled={ctx.locked.has(k)}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={() => commit()}
@@ -676,16 +948,18 @@ function SelectField({
   ctx,
   k,
   label,
+  hint,
   options,
 }: {
   ctx: FieldCtx;
   k: string;
   label: string;
+  hint?: ReactNode;
   options: (readonly [string | number, string])[];
 }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <Label ctx={ctx} k={k} label={label} />
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <Label ctx={ctx} k={k} label={label} hint={hint} />
       <select
         aria-label={label}
         value={String(ctx.s[k])}
@@ -827,7 +1101,8 @@ function Categories() {
     <div className="space-y-2 border-t pt-4">
       <div className="text-sm">Categories</div>
       <div className="text-xs text-muted">
-        A category can have its own save folder for new torrents.
+        A category can have its own save folder for new torrents, and its own seeding limits (e.g. a
+        category for a private tracker that must seed longer).
       </div>
       <ul className="space-y-1">
         {categories.map((c) => (
@@ -839,6 +1114,27 @@ function Categories() {
             <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted">
               {c.savePath ?? 'default folder'}
             </span>
+            <CategoryLimit
+              label={`Seeding minutes for ${c.name}`}
+              unit="min"
+              value={c.seedMinutes ?? null}
+              onSave={(v) =>
+                void api
+                  .saveCategory(c.name, c.savePath, { seedMinutes: v, seedRatio: c.seedRatio })
+                  .then(refresh, (e: Error) => toast.error(e.message))
+              }
+            />
+            <CategoryLimit
+              label={`Seeding ratio for ${c.name}`}
+              unit="ratio"
+              decimal
+              value={c.seedRatio ?? null}
+              onSave={(v) =>
+                void api
+                  .saveCategory(c.name, c.savePath, { seedMinutes: c.seedMinutes, seedRatio: v })
+                  .then(refresh, (e: Error) => toast.error(e.message))
+              }
+            />
             <Button
               size="icon-sm"
               variant="ghost"
@@ -885,6 +1181,45 @@ function Categories() {
         </Button>
       </form>
     </div>
+  );
+}
+
+/** A category's own seeding limit: empty = follow the global setting, 0 = no limit. */
+function CategoryLimit({
+  label,
+  unit,
+  value,
+  decimal,
+  onSave,
+}: {
+  label: string;
+  unit: string;
+  value: number | null;
+  decimal?: boolean;
+  onSave(v: number | null): void;
+}) {
+  const [draft, setDraft] = useDraft(value === null ? '' : String(value));
+  const commit = () => {
+    const n = draft.trim() === '' ? null : Number(draft.replace(',', '.'));
+    if (n !== null && (!Number.isFinite(n) || n < 0 || (!decimal && !Number.isInteger(n))))
+      return toast.error(`${label}: enter a number, or leave empty to use the global limit`);
+    if (n !== value) onSave(n);
+  };
+  return (
+    <label className="flex shrink-0 items-center gap-1 text-xs text-muted">
+      <Input
+        inputMode={decimal ? 'decimal' : 'numeric'}
+        aria-label={label}
+        title={`${label}. Empty = global setting, 0 = no limit.`}
+        placeholder="global"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => e.key === 'Enter' && commit()}
+        className="h-8 w-16 px-2 text-xs"
+      />
+      {unit}
+    </label>
   );
 }
 

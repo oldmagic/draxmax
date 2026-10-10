@@ -196,7 +196,7 @@ test('settings persist (speed limit in KiB/s)', async ({ page, request }) => {
   await expect(page.getByRole('spinbutton', { name: 'Download limit in KiB/s' })).toHaveValue(
     '500',
   );
-  const seed = page.getByRole('spinbutton', { name: 'Seeding time limit (minutes)' });
+  const seed = page.getByRole('spinbutton', { name: 'Stop seeding after' });
   await seed.fill('90');
   await seed.press('Enter');
   await expect
@@ -217,4 +217,60 @@ test('stats page shows live numbers; health and security headers', async ({ page
   expect(await health.json()).toMatchObject({ status: 'ok' });
   const res = await page.goto('/settings');
   expect(res?.headers()['content-security-policy']).toContain("script-src 'self'");
+});
+
+test('search, indexers, per-rule missing episodes and moving a torrent', async ({
+  page,
+  request,
+}) => {
+  await page.goto('/downloads');
+  await page.keyboard.press('/');
+  await expect(page).toHaveURL(/\/search$/);
+  await expect(page.getByText('Type a title to search Nyaa, AnimeTosho.')).toBeVisible();
+
+  // Indexers live with the sites; API keys are never shown again.
+  await page.getByRole('link', { name: 'Sites', exact: true }).first().click();
+  const indexers = page.getByRole('list', { name: 'Indexers' });
+  await expect(indexers.getByText('AnimeTosho')).toBeVisible();
+  await page
+    .getByRole('textbox', { name: 'Torznab URL' })
+    .fill('http://127.0.0.1:9/1/api?apikey=SECRETKEY');
+  await page.getByRole('button', { name: 'Add indexer' }).click();
+  await expect(indexers.getByText('127.0.0.1:9/1')).toBeVisible();
+  await expect(page.getByText('SECRETKEY')).toHaveCount(0);
+  await indexers.getByRole('switch', { name: 'Search Nyaa' }).click();
+  await expect
+    .poll(async () => (await (await request.get('/api/settings')).json()).settings.missingUseNyaa)
+    .toBe(false);
+  page.once('dialog', (d) => void d.accept());
+  await indexers.getByRole('button', { name: /Remove Torznab/ }).click();
+  await expect(indexers.getByText('127.0.0.1:9/1')).toHaveCount(0);
+
+  // A rule can ask for the whole season, and says when it can't be checked.
+  await page.goto('/rss');
+  await page.getByRole('tab', { name: 'Download rules' }).click();
+  await page.getByRole('button', { name: 'Create a rule' }).click();
+  await page.getByRole('textbox', { name: 'Rule name' }).fill('E2E Show');
+  await expect(page.getByText(/Needs a “Save to” folder/)).toBeVisible();
+  await page.getByLabel('Missing episodes').selectOption('all');
+  await page.getByRole('button', { name: /^(Create|Save)/ }).click();
+  await expect
+    .poll(async () => (await (await request.get('/api/rss/rules')).json())[0]?.missingMode)
+    .toBe('all');
+  await page.getByRole('tab', { name: 'Missing' }).click();
+  await expect(page.getByText(/1 enabled rule has no “Save to” folder/)).toBeVisible();
+
+  // Move a torrent to another folder from its menu.
+  const added = await request.post('/api/torrents/magnet', { data: { magnetURI: MAGNET } });
+  const { id, savePath } = await added.json();
+  await page.goto('/downloads');
+  await torrentRow(page).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Move to another folder…' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Move to another folder' });
+  await dialog.getByLabel('New folder').fill(`${savePath}-moved`);
+  await dialog.getByRole('button', { name: 'Move', exact: true }).click();
+  await expect
+    .poll(async () => (await (await request.get(`/api/torrents/${id}`)).json()).savePath)
+    .toBe(`${savePath}-moved`);
+  await request.delete(`/api/torrents/${id}`);
 });

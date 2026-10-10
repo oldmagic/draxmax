@@ -58,13 +58,18 @@ export function episodesFromKeys(keys: Iterable<string>, id: Identity): Set<numb
  * resolutions (indexers match whole words, "720" wouldn't find "720p"; the rule's own filter
  * still checks it). Regex rules fall back to the show title and season.
  */
-export function searchQuery(rule: Pick<DownloadRule, 'mustContain' | 'useRegex'>, id: Identity) {
+export function searchQuery(
+  rule: Pick<DownloadRule, 'mustContain' | 'useRegex'> & { name?: string },
+  id: Identity | null,
+) {
   const first = rule.useRegex ? '' : (rule.mustContain.find((s) => s.trim()) ?? '');
   const words = (first.split('|')[0] ?? '')
     .replace(/[*?]/g, ' ')
     .split(/\s+/)
     .filter((w) => w && !/^\d{3,4}p?$/i.test(w));
   if (words.length) return words.join(' ');
+  // Nothing on disk to name the show yet: the rule's own name is the best guess.
+  if (!id) return (rule.name ?? '').trim();
   const season = id.season > 1 ? ` S${String(id.season).padStart(2, '0')}` : '';
   return id.anime && id.season > 1 ? `${id.title} S${id.season}` : `${id.title}${season}`;
 }
@@ -86,7 +91,8 @@ export interface Plan {
 /**
  * Chooses releases for missing episodes. Only results that pass the rule's own filters and
  * are the same show and season are considered, and only episodes from the first one owned
- * onwards (earlier ones were probably watched and deleted). A batch is taken only when every
+ * onwards (earlier ones were probably watched and deleted) unless `fromStart` asks for the
+ * whole season. A batch is taken only when every
  * episode in it is missing; otherwise single episodes with the most seeders win.
  */
 export function planDownloads(
@@ -94,9 +100,9 @@ export function planDownloads(
   rule: Pick<DownloadRule, 'mustContain' | 'mustNotContain' | 'useRegex' | 'episodeFilter'>,
   id: Identity,
   have: Set<number>,
-  opts: { minSeeders: number },
+  opts: { minSeeders: number; fromStart?: boolean },
 ): Plan {
-  const floor = have.size ? Math.min(...have) : 1;
+  const floor = !opts.fromStart && have.size ? Math.min(...have) : 1;
   const filter = rule.episodeFilter?.trim() ? parseEpisodeFilter(rule.episodeFilter) : null;
   const candidates = results.flatMap((result) => {
     const r = parseRelease(result.title);

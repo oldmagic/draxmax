@@ -1,14 +1,20 @@
 # Example: DraxMax next to Sonarr, Radarr, Prowlarr and Jellyfin sharing one /data tree.
 # Use the same PUID/PGID everywhere and the same host path (/srv/media here) so hard links work.
+#
+# In Sonarr/Radarr add DraxMax under Settings → Download Clients as "qBittorrent":
+# host = this machine's address, port 8895, and the Web UI login below. DraxMax speaks the
+# part of qBittorrent's API they use. In Prowlarr, copy each indexer's Torznab feed URL into
+# DraxMax → Sites → Indexers to use it for search and missing episodes.
 services:
   draxmax:
-    image: ghcr.io/draxmax/draxmax:latest
+    image: ghcr.io/oldmagic/draxmax:latest
     network_mode: host
+    user: '1000:1000'
     environment:
-      - PUID=1000
-      - PGID=1000
       - TZ=Europe/Paris
       - DOWNLOAD_PATH=/data/torrents
+      # Keep finished torrents in the list so Sonarr/Radarr can import them.
+      - SEED_LIMIT_ACTION=pause
       - WEBUI_USERNAME=admin
       - WEBUI_PASSWORD=change-me-please
     volumes:

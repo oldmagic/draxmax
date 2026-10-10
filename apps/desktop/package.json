@@ -17,9 +17,9 @@
     "@draxmax/core": "workspace:*",
     "@draxmax/server": "workspace:*",
     "@draxmax/shared": "workspace:*",
-    "@fastify/cookie": "^11.1.2",
-    "@fastify/static": "^10.1.5",
-    "@fastify/websocket": "^11.3.3",
+    "@fastify/cookie": "^11.1.3",
+    "@fastify/static": "^10.1.6",
+    "@fastify/websocket": "^11.3.4",
     "fastify": "^5.12.5",
     "magnet-uri": "^7.0.10",
     "parse-torrent": "^11.0.24",
@@ -28,9 +28,9 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "electron": "^44.6.0",
-    "esbuild": "^0.28.2",
-    "electron-builder": "^26.15.3"
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2"
   },
   "author": "DraxMax",
   "license": "MIT"

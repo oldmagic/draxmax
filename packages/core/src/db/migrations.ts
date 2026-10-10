@@ -172,4 +172,18 @@ export const migrations: string[] = [
   CREATE INDEX notifications_by_read ON notifications(read, id);
   CREATE INDEX notifications_by_key ON notifications(dedupe_key);
   `,
+  `
+  ALTER TABLE torrents ADD COLUMN complete_path TEXT;
+  ALTER TABLE torrents ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE torrents ADD COLUMN seed_exempt INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE rss_rules ADD COLUMN missing_mode TEXT NOT NULL DEFAULT 'default';
+  ALTER TABLE sites ADD COLUMN content_types TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE sites ADD COLUMN category TEXT;
+  ALTER TABLE categories ADD COLUMN seed_minutes INTEGER;
+  ALTER TABLE categories ADD COLUMN seed_ratio REAL;
+  CREATE TABLE sessions (
+    id_hash     TEXT PRIMARY KEY,
+    expires_at  INTEGER NOT NULL
+  );
+  `,
 ];

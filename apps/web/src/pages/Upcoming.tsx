@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { Link } from 'wouter';
+import { Link, useLocation } from 'wouter';
 import type { LibraryEntryDTO, UpcomingItemDTO } from '@draxmax/shared';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -67,6 +67,7 @@ function searchQuery(i: UpcomingItemDTO): string {
 
 export function UpcomingPage() {
   const qc = useQueryClient();
+  const [, navigate] = useLocation();
   const { data, isLoading } = useQuery({ queryKey: ['upcoming'], queryFn: api.upcoming });
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const [tab, setTab] = useState('foryou');
@@ -102,10 +103,8 @@ export function UpcomingPage() {
         'noopener,noreferrer',
       );
     } else {
-      void navigator.clipboard.writeText(q).then(() =>
-        toast.success('Search text copied', {
-          description: `“${q}” — set a search site in Settings to open it directly.`,
-        }),
+      navigate(
+        `/search?q=${encodeURIComponent(q)}&type=${item.type === 'movie' ? 'movies' : item.type}`,
       );
     }
   }

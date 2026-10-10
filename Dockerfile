@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
 # ---- Build: install, build Web UI + server bundle, prune to production deps ----
-FROM node:24-bookworm AS build
+# Base images are pinned by digest so a rebuild can't silently pick up a different image;
+# Dependabot proposes the updates (.github/dependabot.yml).
+FROM node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 AS build
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH CI=true
 RUN corepack enable
 WORKDIR /src
@@ -30,7 +32,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
  && cp -r apps/web/dist /out/web
 
 # ---- Runtime ----
-FROM node:24-bookworm-slim
+FROM node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 # Pick up Debian security fixes released since the base image was built.
 RUN apt-get update \
  && apt-get -y upgrade --no-install-recommends \
@@ -56,7 +58,7 @@ ENV PUID=1000 PGID=1000 DRAXMAX_DOCKER=1
 EXPOSE 8895 6881/tcp 6881/udp 6882/udp
 VOLUME ["/config", "/downloads", "/watch"]
 HEALTHCHECK --interval=60s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+process.env.PORT+'/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+  CMD node -e "const h=process.env.HOST;fetch('http://'+(!h||h==='0.0.0.0'||h==='::'?'127.0.0.1':h.includes(':')?'['+h+']':h)+':'+process.env.PORT+'/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["node", "--enable-source-maps", "dist/server.js"]

@@ -1,4 +1,13 @@
-import { Activity, Bell, CalendarClock, Download, Globe, Rss, Settings } from 'lucide-react';
+import {
+  Activity,
+  Bell,
+  CalendarClock,
+  Download,
+  Globe,
+  Rss,
+  Search,
+  Settings,
+} from 'lucide-react';
 import { motion } from 'motion/react';
 import { Link, useLocation } from 'wouter';
 import { NotificationBell, UnreadBadge } from '@/components/NotificationBell';
@@ -9,6 +18,7 @@ import { useTorrents } from '@/stores/torrents';
 
 const NAV = [
   { href: '/downloads', label: 'Downloads', icon: Download },
+  { href: '/search', label: 'Search', icon: Search },
   { href: '/upcoming', label: 'Upcoming', icon: CalendarClock },
   { href: '/rss', label: 'RSS', icon: Rss },
   { href: '/sites', label: 'Sites', icon: Globe },

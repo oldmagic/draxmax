@@ -40,6 +40,7 @@ function Meta({ t }: { t: TorrentDTO }) {
       <Badge tone={meta.badge} className="shrink-0">
         {meta.label}
       </Badge>
+      {t.private && <Badge tone="muted">Private</Badge>}
       {t.category && <Badge tone="info">{t.category}</Badge>}
       {t.tags.map((tag) => (
         <Badge key={tag} tone="muted">

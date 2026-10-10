@@ -2,7 +2,7 @@
 services:
   draxmax:
     build: .
-    image: ghcr.io/draxmax/draxmax:latest
+    image: ghcr.io/oldmagic/draxmax:latest
     container_name: draxmax
     # Host networking gives the best DHT / peer connectivity (Linux only).
     # On macOS/Windows Docker Desktop, comment this out and use the `ports` block instead.
@@ -12,13 +12,19 @@ services:
     #   - "6881:6881"       # BitTorrent TCP
     #   - "6881:6881/udp"   # BitTorrent uTP
     #   - "6882:6882/udp"   # DHT (TORRENT_PORT + 1 unless DHT_PORT is set)
+    # Runs as this user from the first instruction: files are written as it, and nothing in
+    # the container ever runs as root (match your host user: `id -u` / `id -g`).
+    # ./data/config and your save folders must be writable by it.
+    user: '${PUID:-1000}:${PGID:-1000}'
     environment:
       - TZ=${TZ:-UTC}
-      # Files are written as this user/group (match your host user: `id -u` / `id -g`).
-      - PUID=${PUID:-1000}
-      - PGID=${PGID:-1000}
+      # Address the Web UI listens on. With host networking, set this to your LAN address
+      # (e.g. 192.168.1.10) in .env to keep it off other interfaces.
+      - HOST=${HOST:-0.0.0.0}
       - PORT=${PORT:-8895}
       - TORRENT_PORT=${TORRENT_PORT:-6881}
+      # Default save folder. Must be a path mounted under `volumes` below.
+      - DOWNLOAD_PATH=${DOWNLOAD_PATH:-/media}
       # Optional Web UI login (otherwise the first remote visit asks you to create one).
       - WEBUI_USERNAME=${WEBUI_USERNAME:-}
       - WEBUI_PASSWORD=${WEBUI_PASSWORD:-}
@@ -28,22 +34,26 @@ services:
       - API_TOKEN=${API_TOKEN:-}
     volumes:
       - ./data/config:/config
-      - ./data/downloads:/downloads
       - ./data/watch:/watch
-      # Drives mounted under /media on the host, at the same path in DraxMax (Add → Save to →
-      # Browse). `rslave` makes drives mounted there later show up without a restart.
+      # Drives mounted under /media on the host, at the same path in DraxMax. This is the
+      # default save folder (DOWNLOAD_PATH above). `rslave` makes drives mounted there later
+      # show up without a restart.
       - /media:/media:rslave
       # Other save folders, e.g. a NAS share mounted on the host:
       # - /mnt/nas/media:/nas
-      # Lets Settings → "Run as" accept host user/group names (Linux only; read-only).
+      # Lets Settings show host user/group names (Linux only; read-only).
       - /etc/passwd:/host/etc/passwd:ro
       - /etc/group:/host/etc/group:ro
-    # Hardening: the entrypoint only needs these capabilities to apply PUID/PGID before it
-    # drops to the unprivileged user (which then has none at all).
+    # Hardening: no capabilities, no privilege escalation, and a read-only root filesystem
+    # (only the volumes above and a small /tmp are writable).
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
-    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE, SETUID, SETGID]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    # To let Settings → "Run as" switch users instead, remove `user:` and `read_only:`, set
+    # PUID/PGID under `environment`, and add: cap_add: [CHOWN, FOWNER, DAC_OVERRIDE, SETUID, SETGID]
     # Resource caps; raise mem_limit if you run hundreds of active torrents.
     mem_limit: 1g
     pids_limit: 256

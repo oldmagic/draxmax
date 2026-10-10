@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  FolderInput,
   FolderOpen,
   Info,
   Megaphone,
@@ -61,6 +62,12 @@ export function torrentActions(targets: TorrentDTO[]): MenuAction[] {
       icon: <Tag />,
       onSelect: () => ui.askCategory(ids),
       separatorBefore: true,
+    },
+    {
+      key: 'move',
+      label: 'Move to another folder…',
+      icon: <FolderInput />,
+      onSelect: () => ui.askMove(ids),
     },
     {
       key: 'reannounce',

@@ -12,7 +12,8 @@ import type {
   RuleImportResult,
   RuleInput,
 } from '@draxmax/shared';
-import { MAGNET_RE } from '@draxmax/shared';
+import { MAGNET_RE, ruleSchema } from '@draxmax/shared';
+import { parseRelease } from '../media/parse-title.ts';
 import { CoreError } from '../errors.ts';
 import type { CoreEvents } from '../events.ts';
 import { fetchBytes } from '../net/http.ts';
@@ -435,6 +436,7 @@ export class RssService {
         tags: r.tags,
         savePath: r.savePath ?? '',
         addPaused: r.addPaused,
+        ...(r.missingMode && r.missingMode !== 'default' ? { missingMode: r.missingMode } : {}),
       })),
     };
   }
@@ -547,6 +549,63 @@ export class RssService {
   }
 
   /** Which current articles a (possibly unsaved) rule would match, ignoring history. */
+  /**
+   * A ready-to-save rule for a release name ("Follow this show"): the show's name, group
+   * and resolution as the filter, and a folder, category and feeds modelled on the rules
+   * that already exist for the same kind of show.
+   */
+  suggestRule(title: string): RuleInput {
+    const r = parseRelease(title);
+    const show = r.title || title.trim();
+    const group =
+      /^\s*\[([^\]]+)\]/.exec(title)?.[1] ??
+      /-([A-Za-z0-9]+)(?:\.[a-z0-9]{2,4})?$/.exec(title)?.[1];
+    const resolution = /\b(2160|1080|720|480)p\b/i.exec(title)?.[1];
+    const season = r.season && r.season > 1 ? r.season : 1;
+    const words = [
+      show,
+      ...(r.season && r.season > 1 && !r.anime ? [`S${String(season).padStart(2, '0')}`] : []),
+    ];
+    if (group) words.push(group);
+    if (resolution) words.push(`${resolution}p`);
+
+    // Learn the folder layout from existing rules of the same kind (anime or not).
+    const peers = this.deps.repo
+      .rules()
+      .filter((x) => x.savePath && /anime/i.test(x.savePath) === r.anime);
+    const mode = <T>(items: T[]): T | undefined => {
+      const n = new Map<string, { v: T; n: number }>();
+      for (const v of items) {
+        const k = JSON.stringify(v);
+        n.set(k, { v, n: (n.get(k)?.n ?? 0) + 1 });
+      }
+      return [...n.values()].sort((a, b) => b.n - a.n)[0]?.v;
+    };
+    const seasonDir = /^(s|season)[ ._-]?\d+$/i;
+    const layout = mode(
+      peers.map((x) => {
+        const parts = x.savePath!.replace(/[\\/]+$/, '').split('/');
+        const hasSeason = seasonDir.test(parts.at(-1) ?? '');
+        return { base: parts.slice(0, hasSeason ? -2 : -1).join('/'), hasSeason };
+      }),
+    );
+    const folder = show.replace(/[\\/:*?"<>|]/g, '').trim();
+    const savePath = layout?.base
+      ? `${layout.base}/${folder}${layout.hasSeason ? `/S${String(season).padStart(2, '0')}` : ''}`
+      : '';
+    const like = layout ? peers.filter((x) => x.savePath!.startsWith(`${layout.base}/`)) : peers;
+    const category = mode(like.flatMap((x) => (x.category ? [x.category] : [])));
+    return ruleSchema.parse({
+      name: season > 1 ? `${show} S${season}` : show,
+      mustContain: [words.join(' ')],
+      smartEpisodeFilter: true,
+      assignedFeedIds: mode(like.map((x) => [...x.assignedFeedIds].sort())) ?? [],
+      tags: mode(like.map((x) => x.tags)) ?? [],
+      ...(category ? { category } : {}),
+      ...(savePath ? { savePath } : {}),
+    });
+  }
+
   preview(input: RuleInput): ArticleDTO[] {
     try {
       validateRule(input);
@@ -703,6 +762,7 @@ function toRuleRow(input: RuleInput, existing: RuleRow | null): RuleRow {
     assignedFeedIds: input.assignedFeedIds,
     tags: input.tags,
     addPaused: input.addPaused,
+    missingMode: input.missingMode ?? 'default',
     lastMatchAt: existing?.lastMatchAt ?? null,
     createdAt: existing?.createdAt ?? new Date().toISOString(),
   };

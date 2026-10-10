@@ -4,6 +4,10 @@ const httpUrl = z.url({ protocol: /^https?$/ }).max(2048);
 const template = z.string().trim().max(2048);
 const fieldName = z.string().regex(/^[A-Za-z0-9_]{1,64}$/, 'Letters, digits and _ only');
 
+/** What a site carries. A site without any is searched for everything. */
+export const CONTENT_TYPES = ['anime', 'tv', 'movies'] as const;
+export type ContentType = (typeof CONTENT_TYPES)[number];
+
 /** How search responses are read; omitted fields are auto-detected. */
 export const siteMappingSchema = z.object({
   format: z.enum(['auto', 'json', 'html', 'rss']).default('auto'),
@@ -34,6 +38,10 @@ export const siteSchema = z.object({
   name: z.string().trim().min(1).max(100),
   preset: z.string().max(100).nullable().default(null),
   enabled: z.boolean().default(true),
+  /** Kinds of content this site is searched for; empty = everything. */
+  contentTypes: z.array(z.enum(CONTENT_TYPES)).max(3).default([]),
+  /** Download category for torrents found here, when the rule or request doesn't set one. */
+  category: z.string().trim().max(100).nullable().default(null),
   baseUrls: z.array(httpUrl).min(1).max(20),
   searchUrls: z.array(template.min(1)).max(10).default([]),
   infoUrl: template.default(''),
@@ -81,6 +89,8 @@ export interface SiteDTO {
   name: string;
   preset: string | null;
   enabled: boolean;
+  contentTypes: ContentType[];
+  category: string | null;
   baseUrls: string[];
   searchUrls: string[];
   infoUrl: string;

@@ -13,7 +13,9 @@ import {
 } from 'lucide-react';
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
+import { CONTENT_TYPES } from '@draxmax/shared';
 import type {
+  ContentType,
   SiteDTO,
   SiteField,
   SiteInput,
@@ -26,6 +28,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Input, Textarea } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import { SearchSources } from '@/components/SearchSources';
 import { api } from '@/lib/api';
 import { formatBytes } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -35,6 +38,8 @@ interface Draft {
   name: string;
   preset: string | null;
   enabled: boolean;
+  contentTypes: ContentType[];
+  category: string;
   baseUrls: string;
   searchUrls: string;
   infoUrl: string;
@@ -48,6 +53,12 @@ interface Draft {
   headers?: string | null;
 }
 
+const TYPE_LABEL: Record<ContentType, string> = {
+  anime: 'Anime',
+  tv: 'TV shows',
+  movies: 'Movies',
+};
+
 const lines = (s: string) =>
   s
     .split('\n')
@@ -59,6 +70,8 @@ function fromSite(s: SiteDTO): Draft {
     name: s.name,
     preset: s.preset,
     enabled: s.enabled,
+    contentTypes: s.contentTypes,
+    category: s.category ?? '',
     baseUrls: s.baseUrls.join('\n'),
     searchUrls: s.searchUrls.join('\n'),
     infoUrl: s.infoUrl,
@@ -76,6 +89,8 @@ function fromPreset(p: SitePresetDTO | null): Draft {
     name: p?.name ?? '',
     preset: p?.id ?? null,
     enabled: true,
+    contentTypes: [],
+    category: '',
     baseUrls: p ? (p.urls[0] ?? '') : '',
     searchUrls: (p?.searchUrls ?? []).join('\n'),
     infoUrl: p?.infoUrl ?? '',
@@ -102,6 +117,8 @@ function toInput(d: Draft): SiteInput {
     name: d.name.trim(),
     preset: d.preset,
     enabled: d.enabled,
+    contentTypes: d.contentTypes,
+    category: d.category.trim() || null,
     baseUrls: lines(d.baseUrls),
     searchUrls: lines(d.searchUrls),
     infoUrl: d.infoUrl.trim(),
@@ -129,8 +146,9 @@ export function SitesPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Sites</h1>
           <p className="mt-1 text-sm text-muted">
-            Tracker logins and search pages. Enabled sites are searched for missing episodes, and
-            their cookies are sent with RSS feeds and downloads on the same site.
+            Everywhere DraxMax searches: your tracker sites and the indexers below them. They are
+            used by Search and by the missing-episode check, and a site&apos;s cookies are sent with
+            its RSS feeds and downloads.
           </p>
         </div>
         <Button variant="primary" onClick={() => setPicking(true)}>
@@ -167,6 +185,7 @@ export function SitesPage() {
               </Button>
             </div>
           )}
+          <SearchSources />
         </aside>
         <section className="glass min-h-0 overflow-y-auto rounded-2xl p-5">
           {newDraft ? (
@@ -445,6 +464,7 @@ function SiteEditor({
   onCancel(): void;
 }) {
   const qc = useQueryClient();
+  const { data: categories = [] } = useQuery({ queryKey: ['categories'], queryFn: api.categories });
   const [d, setD] = useState<Draft>(initial);
   const [query, setQuery] = useState('');
   const [result, setResult] = useState<SiteTestResult | null>(site?.lastTest ?? null);
@@ -531,6 +551,47 @@ function SiteEditor({
               className="min-h-10 font-mono text-xs"
               placeholder="https://superbits.org/"
             />
+          </Field>
+          <div className="space-y-1.5">
+            <span className="text-sm font-medium">What this site carries</span>
+            <div className="flex flex-wrap gap-4 pt-1">
+              {CONTENT_TYPES.map((t) => (
+                <label key={t} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="size-4"
+                    checked={d.contentTypes.includes(t)}
+                    onChange={(e) =>
+                      set({
+                        contentTypes: e.target.checked
+                          ? [...d.contentTypes, t]
+                          : d.contentTypes.filter((x) => x !== t),
+                      })
+                    }
+                  />
+                  {TYPE_LABEL[t]}
+                </label>
+              ))}
+            </div>
+            <span className="block text-xs text-muted">
+              The site is only searched for these. Leave all unticked to search it for everything.
+            </span>
+          </div>
+          <Field
+            label="Download category"
+            hint="Given to torrents found on this site when the rule (or you) didn't pick one. Optional."
+          >
+            <Input
+              value={d.category}
+              onChange={(e) => set({ category: e.target.value })}
+              list="site-categories"
+              placeholder="None"
+            />
+            <datalist id="site-categories">
+              {categories.map((c) => (
+                <option key={c.name} value={c.name} />
+              ))}
+            </datalist>
           </Field>
         </div>
       </Section>

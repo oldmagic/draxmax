@@ -27,8 +27,7 @@ fileAssociations:
     role: Viewer
 linux:
   target: [AppImage, deb]
-  # Placeholder maintainer; replace before publishing packages.
-  maintainer: DraxMax contributors <maintainers@draxmax.invalid>
+  maintainer: DraxMax contributors <oldmagic@users.noreply.github.com>
   category: Network
   icon: resources/icon.png
   mimeTypes: [x-scheme-handler/magnet, application/x-bittorrent]
