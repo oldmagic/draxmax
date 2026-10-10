@@ -5,12 +5,21 @@ updates:
     directory: /
     schedule: { interval: weekly }
     open-pull-requests-limit: 10
+    ignore:
+      # The types must match the Node line we run (see the docker entry below).
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
     groups:
       minor-and-patch:
         update-types: [minor, patch]
   - package-ecosystem: docker
     directory: /
     schedule: { interval: weekly }
+    ignore:
+      # Moving to a new Node major is a deliberate change (engines, CI, native modules),
+      # not an automatic one. Digest and patch updates of the current line still arrive.
+      - dependency-name: node
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
