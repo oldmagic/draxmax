@@ -134,6 +134,8 @@ function findList(root: unknown): { path: string; items: Obj[] } | null {
 const isLinkish = (v: unknown) => typeof v === 'string' && /^(https?:\/\/|magnet:|\/)/i.test(v);
 
 function parseJson(body: string, mapping: SiteMapping): ParsedSearch {
+  // Some APIs (SuperBits) answer a search without matches with an empty body.
+  if (!body.trim()) return { format: 'json', hits: [], mapping: { ...mapping, format: 'json' } };
   let root: unknown;
   try {
     root = JSON.parse(body);
