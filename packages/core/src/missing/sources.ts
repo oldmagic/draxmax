@@ -110,7 +110,7 @@ export function animeToshoSource(fetchText: FetchText, intervalMs = 3_000): Sear
     animeOnly: true,
     search: paced(intervalMs, async (q) => {
       const raw = await fetchText(
-        `https://feed.animetosho.org/json?q=${encodeURIComponent(q)}`,
+        `https://animetosho.org/feed/json?q=${encodeURIComponent(q)}`,
         'application/json',
       );
       let items: unknown;
