@@ -186,4 +186,15 @@ export const migrations: string[] = [
     expires_at  INTEGER NOT NULL
   );
   `,
+  `
+  -- Failing search sources used to be recorded on every run; fold each source's repeats
+  -- into its newest entry.
+  UPDATE notifications
+     SET count = (SELECT SUM(n2.count) FROM notifications n2 WHERE n2.dedupe_key = notifications.dedupe_key),
+         read = (SELECT MIN(n2.read) FROM notifications n2 WHERE n2.dedupe_key = notifications.dedupe_key)
+   WHERE id IN (SELECT MAX(id) FROM notifications WHERE dedupe_key LIKE 'source:%' GROUP BY dedupe_key);
+  DELETE FROM notifications
+   WHERE dedupe_key LIKE 'source:%'
+     AND id NOT IN (SELECT MAX(id) FROM notifications WHERE dedupe_key LIKE 'source:%' GROUP BY dedupe_key);
+  `,
 ];

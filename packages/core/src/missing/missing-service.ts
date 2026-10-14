@@ -98,6 +98,7 @@ export class MissingService {
   private running: Promise<void> | null = null;
   /** Sources that failed during the current run (name → error), for the run summary. */
   private runErrors = new Map<string, string>();
+  private runWorking = new Set<string>();
   private current: string | null = null;
   private timers: NodeJS.Timeout[] = [];
   private closed = false;
@@ -213,6 +214,7 @@ export class MissingService {
     const sources = this.sources();
     if (sources.length === 0) return;
     this.runErrors = new Map();
+    this.runWorking = new Set();
     const settings = this.deps.settings();
     const now = Date.now();
     const state = this.stored();
@@ -249,6 +251,7 @@ export class MissingService {
       this.deps.events.emit('missing:run', {
         added,
         failing: [...this.runErrors].map(([source, error]) => ({ source, error })),
+        working: [...this.runWorking].filter((name) => !this.runErrors.has(name)),
       });
   }
 
@@ -314,6 +317,7 @@ export class MissingService {
     for (const source of usable) {
       try {
         results.push(...(await source.search(query)));
+        this.runWorking.add(source.name);
       } catch (err) {
         errors.push(`${source.name}: ${(err as Error).message}`);
         this.runErrors.set(source.name, (err as Error).message);
