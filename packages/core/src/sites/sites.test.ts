@@ -188,7 +188,11 @@ describe('SiteService', () => {
       siteFetch,
       missingFetch: { fetchText: async () => '[]', fetchTorrent },
     });
-    core.settings.update({ missingUseNyaa: false, missingUseAnimeTosho: false });
+    core.settings.update({
+      missingUseNyaa: false,
+      missingUseAnimeTosho: false,
+      missingUseSubsPlease: false,
+    });
   });
   afterEach(async () => {
     await core.shutdown();

@@ -289,9 +289,13 @@ export function createCore(opts: CoreOptions): Core {
     }
     // Newly enabled or new sources: check everything due now.
     if (
-      ['missingEnabled', 'missingUseNyaa', 'missingUseAnimeTosho', 'torznabUrls'].some((k) =>
-        changed.includes(k as never),
-      )
+      [
+        'missingEnabled',
+        'missingUseNyaa',
+        'missingUseAnimeTosho',
+        'missingUseSubsPlease',
+        'torznabUrls',
+      ].some((k) => changed.includes(k as never))
     ) {
       events.emit('missing:updated', null);
       if (s.missingEnabled && !opts.noSchedulers) void missing.run();

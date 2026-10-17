@@ -226,7 +226,7 @@ test('search, indexers, per-rule missing episodes and moving a torrent', async (
   await page.goto('/downloads');
   await page.keyboard.press('/');
   await expect(page).toHaveURL(/\/search$/);
-  await expect(page.getByText('Type a title to search Nyaa, AnimeTosho.')).toBeVisible();
+  await expect(page.getByText('Type a title to search Nyaa, AnimeTosho, SubsPlease.')).toBeVisible();
 
   // Indexers live with the sites; API keys are never shown again.
   await page.getByRole('link', { name: 'Sites', exact: true }).first().click();

@@ -92,6 +92,7 @@ export const settingsSchema = z
     missingIntervalHours: z.number().int().min(1).max(168).default(6),
     missingUseNyaa: z.boolean().default(true),
     missingUseAnimeTosho: z.boolean().default(true),
+    missingUseSubsPlease: z.boolean().default(true),
     /** Torznab endpoints (Prowlarr/Jackett), including `apikey=`, separated by spaces or new lines. */
     torznabUrls: z.string().trim().max(16_384).default(''),
     /** Skip releases with fewer seeders (when the source reports them). */
@@ -220,6 +221,7 @@ const ENV_MAP: Record<string, { key: SettingsKey; kind: Kind }> = {
   MISSING_INTERVAL_HOURS: { key: 'missingIntervalHours', kind: 'int' },
   MISSING_USE_NYAA: { key: 'missingUseNyaa', kind: 'bool' },
   MISSING_USE_ANIMETOSHO: { key: 'missingUseAnimeTosho', kind: 'bool' },
+  MISSING_USE_SUBSPLEASE: { key: 'missingUseSubsPlease', kind: 'bool' },
   MISSING_MIN_SEEDERS: { key: 'missingMinSeeders', kind: 'int' },
   MISSING_MAX_PER_RUN: { key: 'missingMaxPerRun', kind: 'int' },
   MISSING_WHEN_EMPTY: { key: 'missingWhenEmpty', kind: 'string' },

@@ -96,7 +96,7 @@ Everything is configurable in **Settings**. Every value can also be set by an en
 | `RSS_ENABLED` / `RSS_REFRESH_MINUTES` | `true` / `30` | |
 | `MISSING_ENABLED` / `MISSING_INTERVAL_HOURS` | `true` / `6` | Search for episodes your rule folders lack (see *Missing episodes*) |
 | `MISSING_WHEN_EMPTY` | `wait` | A rule folder without episodes waits for RSS, or (`download`) is filled from episode 1 |
-| `MISSING_USE_NYAA` / `MISSING_USE_ANIMETOSHO` | `true` / `true` | Built-in anime search sources (also under Sites → Indexers) |
+| `MISSING_USE_NYAA` / `MISSING_USE_ANIMETOSHO` / `MISSING_USE_SUBSPLEASE` | `true` / `true` / `true` | Built-in anime search sources (also under Sites → Indexers) |
 | `TORZNAB_URLS` | | Prowlarr/Jackett Torznab URLs with `apikey=`, space-separated; needed for live-action TV |
 | `MISSING_MIN_SEEDERS` / `MISSING_MAX_PER_RUN` | `1` / `25` | Skip dead releases; cap torrents added per run |
 | `TMDB_API_KEY` | | Free at [themoviedb.org](https://www.themoviedb.org/settings/api); v3 key or v4 token |
@@ -144,14 +144,14 @@ Everything is configurable in **Settings**. Every value can also be set by an en
   - **Coming from qBittorrent?** Export your rules there (RSS → Download Rules… → right-click the list → *Export rules…*). Then use the import button above the rule list. Feeds are matched by URL, and missing ones can be added for you. Rules that end up without a subscribed feed are imported disabled. By default only future articles are downloaded. qBittorrent's per-rule list of already-matched episodes isn't imported.
 - **Missing episodes:** RSS only sees the latest items in a feed, so episodes released while DraxMax was off, or before you added a rule, never arrive that way. Every enabled rule with a *Save to* folder is checked regularly, every 6 h for shows active in the last 30 days and weekly for the rest:
   - DraxMax reads the folder to learn the show, the season and the episodes you have. Torrents in the client and the rule's download history count too.
-  - It searches Nyaa, AnimeTosho and your Torznab indexers with the rule's own text, and accepts only results that pass the rule's filters, so the group and quality stay the same.
+  - It searches Nyaa, AnimeTosho, SubsPlease and your Torznab indexers with the rule's own text, and accepts only results that pass the rule's filters, so the group and quality stay the same.
   - It adds every released episode after the first one you have, so episodes you watched and deleted before that aren't fetched again.
   - **Empty folders:** by default a rule whose folder has no episodes waits for its first one from RSS. *Settings → RSS → When a rule's folder has no episodes yet* can fetch the season from episode 1 instead.
   - **Per rule:** the rule editor's *Missing episodes* option overrides this: follow the setting, fill gaps only, fetch the whole season from episode 1, or don't search for this rule at all.
   - A batch is used only when every episode in it is missing. Releases with no seeders wait for the next check.
   - **RSS → Missing episodes** shows the status for each show and has *Check all now*.
 - **Sites** (sidebar, `g` then `i`): everything DraxMax searches, used by Search and by the missing-episode check.
-  - **Indexers** (bottom of the list): turn the built-in anime indexers (Nyaa, AnimeTosho) on or off, and add Prowlarr/Jackett Torznab feed URLs. API keys are stored encrypted and never shown again. The flask button tests a source.
+  - **Indexers** (bottom of the list): turn the built-in anime indexers (Nyaa, AnimeTosho, SubsPlease) on or off, and add Prowlarr/Jackett Torznab feed URLs. API keys are stored encrypted and never shown again. The flask button tests a source.
   - **What this site carries:** tick Anime, TV shows and/or Movies and the site is only searched for those, so an anime rule doesn't query a general tracker. Leave all unticked to search it for everything.
   - **Download category:** torrents found on a site get this category when the rule doesn't set one.
   - **Add site** offers ~110 known trackers (SuperBits, IPTorrents, TorrentLeech, BTN, …), with their URLs, login fields and torrent/download link patterns filled in, or a custom site.
@@ -178,7 +178,7 @@ Everything is configurable in **Settings**. Every value can also be set by an en
 packages/shared   Domain types (spec §5), zod request schemas, WebSocket event contract
 packages/core     UI-agnostic services, composed in createCore():
                     torrent/  TorrentManager (queue, trackers, resume, seeding limits, moving data) + TorrentEngine (WebTorrent adapter)
-                    missing/  missing-episode check and the search sources (Nyaa, AnimeTosho, Torznab)
+                    missing/  missing-episode check and the search sources (Nyaa, AnimeTosho, SubsPlease, Torznab)
                     sites/    tracker sites: credentials, search pages, release filters
                     search/   search over all sources; managing indexers
                     rss/      feed fetcher/parser, rule engine (pure), scheduler, history

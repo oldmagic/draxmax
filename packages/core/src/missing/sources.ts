@@ -1,4 +1,4 @@
-import type { ContentType } from '@draxmax/shared';
+import { MAGNET_RE, type ContentType } from '@draxmax/shared';
 import { fetchBytes } from '../net/http.ts';
 import { parseFeed } from '../rss/feed-parser.ts';
 
@@ -91,6 +91,63 @@ export function nyaaSource(fetchText: FetchText, intervalMs = 3_000): SearchSour
         'Nyaa',
       ),
     ),
+  };
+}
+
+interface SubsPleaseRelease {
+  show?: string;
+  episode?: string;
+  downloads?: { res?: string; magnet?: string }[];
+}
+
+/**
+ * SubsPlease's own release search: every episode and batch they put out, as magnet links.
+ * It matches show names only, so group tags like "[SubsPlease]" are left out of the query.
+ */
+export function subsPleaseSource(fetchText: FetchText, intervalMs = 3_000): SearchSource {
+  return {
+    name: 'SubsPlease',
+    animeOnly: true,
+    search: paced(intervalMs, async (q) => {
+      const show = q
+        .replace(/\[[^\]]*\]/g, ' ')
+        .replace(/\bsubsplease\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!show) return [];
+      const raw = await fetchText(
+        `https://subsplease.org/api/?f=search&tz=UTC&s=${encodeURIComponent(show)}`,
+        'application/json',
+      );
+      let data: unknown;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new Error('SubsPlease returned an invalid response');
+      }
+      // No results come back as an empty array, results as an object keyed by release.
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
+      return Object.values(data as Record<string, SubsPleaseRelease>).flatMap((r) =>
+        (Array.isArray(r?.downloads) ? r.downloads : []).flatMap((d): SearchResult[] => {
+          if (typeof d?.magnet !== 'string' || !MAGNET_RE.test(d.magnet)) return [];
+          const params = new URLSearchParams(d.magnet.slice(d.magnet.indexOf('?') + 1));
+          const title =
+            params.get('dn') ||
+            (r.show && r.episode ? `[SubsPlease] ${r.show} - ${r.episode} (${d.res ?? ''}p)` : '');
+          const size = Number(params.get('xl'));
+          if (!title) return [];
+          return [
+            {
+              title,
+              url: d.magnet,
+              seeders: null,
+              size: Number.isSafeInteger(size) && size > 0 ? size : null,
+              source: 'SubsPlease',
+            },
+          ];
+        }),
+      );
+    }),
   };
 }
 
