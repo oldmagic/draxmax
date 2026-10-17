@@ -13,7 +13,8 @@ import type {
   RuleInput,
 } from '@draxmax/shared';
 import { MAGNET_RE, ruleSchema } from '@draxmax/shared';
-import { parseRelease } from '../media/parse-title.ts';
+import { findExisting } from '../media/existing.ts';
+import { episodeKeys, parseRelease } from '../media/parse-title.ts';
 import { CoreError } from '../errors.ts';
 import type { CoreEvents } from '../events.ts';
 import { fetchBytes } from '../net/http.ts';
@@ -43,6 +44,13 @@ export interface RssServiceDeps {
   requestHeaders?: (url: string) => Record<string, string>;
   /** URLs on user-configured sites may reach the local network. */
   trustsUrl?: (url: string) => boolean;
+}
+
+export interface AddResult {
+  torrentId: string | null;
+  status: 'added' | 'duplicate';
+  /** For a duplicate found by name: the torrent or file that already holds it. */
+  existing?: string;
 }
 
 /** Feeds, articles, download rules and the background refresh scheduler. */
@@ -249,32 +257,51 @@ export class RssService {
     this.deps.events.emit('rss:updated', opts.feedId ?? null);
   }
 
-  /** Manually downloads one article (no rule). */
+  /**
+   * Manually downloads one article. With `via`, it is added as that rule would add it (its
+   * folder, category, tags and paused state) and, when `via.ruleId` is a saved rule, counted
+   * in the rule's history so smart filtering and missing-episode search know about it.
+   */
   async downloadArticle(
     feedId: string,
     id: string,
-  ): Promise<{ torrentId: string | null; status: 'added' | 'duplicate' }> {
+    via?: { rule: RuleInput; ruleId?: string | undefined },
+  ): Promise<AddResult> {
     const article = this.repo.article(feedId, id);
     if (!article) throw new CoreError('not_found', 'Article not found');
     if (!article.torrentURL)
       throw new CoreError('invalid_input', 'This article has no torrent or magnet link');
+    const saved = via?.ruleId ? this.repo.rule(via.ruleId) : null;
+    if (via?.ruleId && !saved) throw new CoreError('not_found', 'Rule not found');
+    const rule = via?.rule;
     const res = await this.addTorrent(
       article.torrentURL,
-      { origin: 'manual', originDetail: 'RSS article' },
+      rule
+        ? {
+            origin: 'rss',
+            originDetail: rule.name,
+            category: rule.category,
+            tags: rule.tags,
+            savePath: rule.savePath,
+            paused: rule.addPaused,
+          }
+        : { origin: 'manual', originDetail: 'RSS article' },
       feedId,
+      article.title,
     );
+    const release = saved ? parseRelease(article.title) : null;
     this.repo.recordDownload({
-      ruleId: null,
-      ruleName: null,
+      ruleId: saved?.id ?? null,
+      ruleName: saved?.name ?? null,
       feedId,
       articleId: id,
       articleTitle: article.title,
       torrentUrl: article.torrentURL,
-      episodeKeys: [],
-      repack: false,
+      episodeKeys: release ? episodeKeys(release) : [],
+      repack: release?.repack ?? false,
       torrentId: res.torrentId,
       status: res.status,
-      error: null,
+      error: res.existing ? `Already have it: ${res.existing}` : null,
     });
     this.repo.setRead(true, { articles: [{ feedId, id }] });
     this.deps.events.emit('rss:updated', feedId);
@@ -684,9 +711,11 @@ export class RssService {
           paused: rule.addPaused,
         },
         feedId,
+        article.title,
       );
       status = res.status;
       torrentId = res.torrentId;
+      if (res.existing) error = `Already have it: ${res.existing}`;
     } catch (err) {
       error = (err as Error).message;
     }
@@ -704,18 +733,31 @@ export class RssService {
       error,
     });
     if (status !== 'failed') {
-      this.repo.saveRule({ ...rule, lastMatchAt: new Date().toISOString() });
+      // An episode found on disk wasn't a new match: don't start "ignore subsequent days".
+      if (!error) this.repo.saveRule({ ...rule, lastMatchAt: new Date().toISOString() });
       this.repo.setRead(true, { articles: [{ feedId, id: article.id }] });
       this.deps.events.emit('rss:match', { ruleName: rule.name, title: article.title, status });
     }
     return status !== 'failed';
   }
 
+  /**
+   * Adds a torrent unless it is already in the client (same info-hash) or, going by its name,
+   * the same episode(s) or movie already is: in the client or among the files in the folder
+   * it would download to. `existing` names what was found then.
+   */
   private async addTorrent(
     url: string,
     opts: AddOptions,
     feedId: string,
-  ): Promise<{ torrentId: string | null; status: 'added' | 'duplicate' }> {
+    title: string,
+  ): Promise<AddResult> {
+    const existing = await findExisting(
+      title,
+      this.deps.torrents.list(),
+      this.deps.torrents.targetPath(opts),
+    );
+    if (existing) return { torrentId: null, status: 'duplicate', existing };
     try {
       if (MAGNET_RE.test(url))
         return { torrentId: this.deps.torrents.addMagnet(url, opts).id, status: 'added' };

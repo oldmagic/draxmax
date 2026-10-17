@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
+  Check,
   CheckCheck,
   Download,
   ExternalLink,
@@ -303,6 +304,13 @@ function FeedItem(props: {
   );
 }
 
+function downloadToast(res: { status: 'added' | 'duplicate'; existing?: string }, title: string) {
+  if (res.status === 'added') toast.success('Torrent added', { description: title });
+  else if (res.existing)
+    toast.info('You already have this', { description: `Skipped: ${res.existing}` });
+  else toast.info('Already in your downloads', { description: title });
+}
+
 function ArticleRow({
   a,
   feedTitle,
@@ -317,12 +325,7 @@ function ArticleRow({
     setBusy(true);
     try {
       const res = await api.downloadArticle(a.feedId, a.id);
-      toast[res.status === 'added' ? 'success' : 'info'](
-        res.status === 'added' ? 'Torrent added' : 'Already in your downloads',
-        {
-          description: a.title,
-        },
-      );
+      downloadToast(res, a.title);
       onChange();
     } catch (e) {
       toast.error((e as Error).message);
@@ -1351,13 +1354,16 @@ function RuleEditor({
                 </h4>
                 <ul>
                   {articles.map((a) => (
-                    <li
+                    <MatchRow
                       key={a.id}
-                      className="truncate rounded-lg px-2 py-1.5 text-xs"
-                      title={a.title}
-                    >
-                      {a.title}
-                    </li>
+                      a={a}
+                      onDownload={() =>
+                        api.downloadArticle(a.feedId, a.id, {
+                          rule: input,
+                          ...(rule ? { ruleId: rule.id } : {}),
+                        })
+                      }
+                    />
                   ))}
                 </ul>
               </section>
@@ -1368,10 +1374,63 @@ function RuleEditor({
           </div>
         )}
         <p className="text-xs text-muted">
-          Preview ignores history; saving applies the rule to these articles too.
+          Preview ignores history; saving applies the rule to these articles too. Use the download
+          button to add one now, into this rule’s folder.
         </p>
       </aside>
     </form>
+  );
+}
+
+/** One article in a rule's "Matching articles" list, with a button to download it now. */
+function MatchRow({
+  a,
+  onDownload,
+}: {
+  a: ArticleDTO;
+  onDownload(): Promise<{ status: 'added' | 'duplicate'; existing?: string }>;
+}) {
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  async function download() {
+    setBusy(true);
+    try {
+      const res = await onDownload();
+      downloadToast(res, a.title);
+      void qc.invalidateQueries({ queryKey: ['rss'] });
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <li className="flex items-center gap-1 rounded-lg py-0.5 pl-2 text-xs hover:bg-surface">
+      <span className={cn('min-w-0 flex-1 truncate', a.downloaded && 'text-muted')} title={a.title}>
+        {a.title}
+      </span>
+      {a.torrentURL && (
+        <Tooltip content={a.downloaded ? 'Download again' : 'Download with this rule'}>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            className="size-7 shrink-0"
+            aria-label={`Download ${a.title}`}
+            disabled={busy}
+            onClick={() => void download()}
+          >
+            {busy ? (
+              <Loader2 className="animate-spin" />
+            ) : a.downloaded ? (
+              <Check className="text-success" />
+            ) : (
+              <Download />
+            )}
+          </Button>
+        </Tooltip>
+      )}
+    </li>
   );
 }
 
@@ -1422,7 +1481,12 @@ function HistoryTab() {
                 {h.ruleName ? `Rule: ${h.ruleName}` : 'Manual download'}
                 {h.feedId === 'missing' && ' (missing episode search)'} ·{' '}
                 {new Date(h.createdAt).toLocaleString()}
-                {h.error && <span className="text-danger"> · {h.error}</span>}
+                {h.error && (
+                  <span className={h.status === 'failed' ? 'text-danger' : undefined}>
+                    {' '}
+                    · {h.error}
+                  </span>
+                )}
               </div>
             </div>
           </li>
