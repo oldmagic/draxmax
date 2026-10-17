@@ -6,7 +6,7 @@ import type { RuleInput } from '@draxmax/shared';
 import { createCore, type Core } from '../core.ts';
 import { FakeEngine } from '../testing/index.ts';
 import { inferIdentity, planDownloads, searchQuery, type Identity } from './plan.ts';
-import type { SearchResult } from './sources.ts';
+import { subsPleaseSource, type SearchResult } from './sources.ts';
 
 const hash = (n: number) => n.toString(16).padStart(40, '0');
 const result = (title: string, seeders: number | null = 10, n = 1): SearchResult => ({
@@ -151,7 +151,7 @@ ${[1, 2, 3, 4, 5]
 
     await core.missing.run({ force: true });
     const s = core.missing.get();
-    expect(s.sources).toEqual(['Nyaa', 'AnimeTosho']);
+    expect(s.sources).toEqual(['Nyaa', 'AnimeTosho', 'SubsPlease']);
     expect(s.shows[0]).toMatchObject({
       title: 'Chii Fuyo',
       season: 1,
@@ -237,7 +237,7 @@ ${[1, 2, 3, 4, 5]
 
   it('searches from the UI, hands out handles instead of links, and adds by handle', async () => {
     const res = await core.search.search('Chii Fuyo', 'anime');
-    expect(res.searched).toEqual(['Nyaa', 'AnimeTosho']);
+    expect(res.searched).toEqual(['Nyaa', 'AnimeTosho', 'SubsPlease']);
     expect(res.results[0]).toMatchObject({
       show: 'Chii Fuyo',
       episodes: [4],
@@ -265,11 +265,12 @@ ${[1, 2, 3, 4, 5]
     expect(list.map((x) => [x.id, x.enabled])).toEqual([
       ['nyaa', false],
       ['animetosho', true],
+      ['subsplease', true],
       ['torznab:0', true],
     ]);
     expect(JSON.stringify(list)).not.toContain('SECRETKEY');
     core.search.removeTorznab(0);
-    expect(core.search.sourceList()).toHaveLength(2);
+    expect(core.search.sourceList()).toHaveLength(3);
   });
 
   it('suggests a rule from a release name, modelled on existing rules', async () => {
@@ -285,5 +286,53 @@ ${[1, 2, 3, 4, 5]
       tags: ['auto'],
       smartEpisodeFilter: true,
     });
+  });
+});
+
+describe('subsPleaseSource', () => {
+  it('searches by show name and returns each resolution as a magnet', async () => {
+    const urls: string[] = [];
+    const magnet = (dn: string, xl: number) =>
+      `magnet:?xt=urn:btih:${'A'.repeat(32)}&dn=${encodeURIComponent(dn)}&xl=${xl}&tr=udp%3A%2F%2Ft.example%3A1`;
+    const source = subsPleaseSource(async (url) => {
+      urls.push(url);
+      return JSON.stringify({
+        'Black Torch - 12': {
+          show: 'Black Torch',
+          episode: '12',
+          downloads: [
+            {
+              res: '720',
+              magnet: magnet('[SubsPlease] Black Torch - 12 (720p) [AA4FC196].mkv', 5),
+            },
+            { res: '1080', magnet: 'https://not-a-magnet.example/x' },
+          ],
+        },
+        'Black Torch - 01-12': {
+          show: 'Black Torch',
+          episode: '01-12',
+          downloads: [{ res: '480', magnet: `magnet:?xt=urn:btih:${'B'.repeat(32)}` }],
+        },
+      });
+    }, 0);
+    expect(await source.search('[SubsPlease] Black Torch')).toEqual([
+      {
+        title: '[SubsPlease] Black Torch - 12 (720p) [AA4FC196].mkv',
+        url: magnet('[SubsPlease] Black Torch - 12 (720p) [AA4FC196].mkv', 5),
+        seeders: null,
+        size: 5,
+        source: 'SubsPlease',
+      },
+      {
+        title: '[SubsPlease] Black Torch - 01-12 (480p)',
+        url: `magnet:?xt=urn:btih:${'B'.repeat(32)}`,
+        seeders: null,
+        size: null,
+        source: 'SubsPlease',
+      },
+    ]);
+    expect(urls).toEqual(['https://subsplease.org/api/?f=search&tz=UTC&s=Black%20Torch']);
+    // No results come back as [].
+    expect(await subsPleaseSource(async () => '[]', 0).search('Nothing')).toEqual([]);
   });
 });

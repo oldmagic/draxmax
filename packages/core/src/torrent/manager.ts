@@ -140,6 +140,13 @@ export class TorrentManager {
     );
   }
 
+  /** The folder a torrent added with these options ends up in. */
+  targetPath(opts: Pick<AddOptions, 'savePath' | 'category'>): string {
+    const category = opts.category?.trim();
+    const categoryPath = category ? this.deps.categories.get(category)?.savePath : null;
+    return opts.savePath ?? categoryPath ?? this.deps.settings().downloadPath;
+  }
+
   /** True if a torrent with this info-hash is already in the list. */
   hasInfoHash(infoHash: string): boolean {
     const h = infoHash.toLowerCase();

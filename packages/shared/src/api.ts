@@ -325,6 +325,12 @@ export const markReadSchema = z.object({
 });
 
 export const articleRefSchema = z.object({ feedId: z.string().min(1), id: z.string().min(1) });
+/** Body of POST /api/rss/articles/download: an article, optionally added the way a rule would add it. */
+export const articleDownloadSchema = articleRefSchema.extend({
+  rule: ruleSchema.optional(),
+  /** A saved rule to count the download for (its history and episode tracking). */
+  ruleId: z.string().min(1).optional(),
+});
 
 /** Body of POST /api/rss/rules/import: a qBittorrent rules export (`{ "<rule name>": {…} }`). */
 export const qbRuleImportSchema = z.object({

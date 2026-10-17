@@ -127,6 +127,13 @@ export function UpcomingPage() {
                 {data.sources.anilist ? 'on' : 'off'}
               </>
             )}
+            {data?.refreshing && data.library.pending > 0 && (
+              <>
+                {' · '}
+                Matching your library: {data.library.pending.toLocaleString()} of{' '}
+                {data.library.total.toLocaleString()} titles to go
+              </>
+            )}
           </p>
         </div>
         <div className="flex gap-2">

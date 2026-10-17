@@ -1,10 +1,10 @@
-import { readdir } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename } from 'node:path';
 import type { MissingResponse, MissingShowDTO, TorrentItem } from '@draxmax/shared';
 import { MAGNET_RE } from '@draxmax/shared';
 import type { Database } from '../db/database.ts';
 import { CoreError } from '../errors.ts';
 import type { CoreEvents } from '../events.ts';
+import { listVideos } from '../media/existing.ts';
 import { fetchBytes } from '../net/http.ts';
 import type { RssRepository, RuleRow } from '../rss/rss-repo.ts';
 import { sameHost } from '../rss/rss-service.ts';
@@ -25,6 +25,7 @@ import {
   animeToshoSource,
   defaultFetchText,
   nyaaSource,
+  subsPleaseSource,
   parseTorznabUrls,
   sourceCarries,
   torznabSource,
@@ -39,8 +40,6 @@ const FIRST_RUN_DELAY_MS = 2 * 60_000;
 /** Shows without a match for this long are checked weekly instead. */
 const ACTIVE_WINDOW_MS = 30 * 24 * HOUR;
 const IDLE_INTERVAL_MS = 7 * 24 * HOUR;
-const VIDEO_EXT = /\.(mkv|mp4|avi|m4v|mov|wmv|ts|webm)$/i;
-const SCAN_DEPTH = 2;
 /** History feed id for torrents added by this service. */
 export const MISSING_FEED_ID = 'missing';
 
@@ -68,23 +67,6 @@ interface Stored {
   lastRunAdded: number;
 }
 
-/** Video file names under a folder (a few levels deep); missing folders count as empty. */
-async function listVideos(root: string, depth = 0, out: string[] = []): Promise<string[]> {
-  if (depth > SCAN_DEPTH) return out;
-  let entries;
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const e of entries) {
-    if (e.name.startsWith('.')) continue;
-    if (e.isDirectory()) await listVideos(join(root, e.name), depth + 1, out);
-    else if (VIDEO_EXT.test(e.name) && !/sample/i.test(e.name)) out.push(e.name);
-  }
-  return out;
-}
-
 const samePath = (a: string, b: string) => a.replace(/[\\/]+$/, '') === b.replace(/[\\/]+$/, '');
 
 /**
@@ -98,6 +80,7 @@ export class MissingService {
   private running: Promise<void> | null = null;
   /** Sources that failed during the current run (name → error), for the run summary. */
   private runErrors = new Map<string, string>();
+  private runWorking = new Set<string>();
   private current: string | null = null;
   private timers: NodeJS.Timeout[] = [];
   private closed = false;
@@ -138,6 +121,7 @@ export class MissingService {
     return [
       ...(s.missingUseNyaa ? [nyaaSource(fetchText, gap)] : []),
       ...(s.missingUseAnimeTosho ? [animeToshoSource(fetchText, gap)] : []),
+      ...(s.missingUseSubsPlease ? [subsPleaseSource(fetchText, gap)] : []),
       ...parseTorznabUrls(s.torznabUrls).map((u) => torznabSource(u, fetchText, gap)),
       ...(this.deps.sites?.sources() ?? []),
     ];
@@ -213,6 +197,7 @@ export class MissingService {
     const sources = this.sources();
     if (sources.length === 0) return;
     this.runErrors = new Map();
+    this.runWorking = new Set();
     const settings = this.deps.settings();
     const now = Date.now();
     const state = this.stored();
@@ -249,6 +234,7 @@ export class MissingService {
       this.deps.events.emit('missing:run', {
         added,
         failing: [...this.runErrors].map(([source, error]) => ({ source, error })),
+        working: [...this.runWorking].filter((name) => !this.runErrors.has(name)),
       });
   }
 
@@ -314,6 +300,7 @@ export class MissingService {
     for (const source of usable) {
       try {
         results.push(...(await source.search(query)));
+        this.runWorking.add(source.name);
       } catch (err) {
         errors.push(`${source.name}: ${(err as Error).message}`);
         this.runErrors.set(source.name, (err as Error).message);
@@ -377,7 +364,7 @@ export class MissingService {
       state: unavailable.length ? 'missing' : plan.released.length ? 'ok' : 'no-results',
       message:
         (plan.released.length === 0
-          ? `No releases of ${id.title}${id.season > 1 ? ` season ${id.season}` : ''} matching this rule were found for “${query}”.`
+          ? `No releases of ${id.title}${id.season > 1 ? ` season ${id.season}` : ''} matching this rule were found for “${query}”${errors.length ? ` (${errors.join(' · ')})` : ''}.`
           : null) ?? (errors.length ? errors.join(' · ') : null),
       // Come back soon when work is left over (budget, unseeded releases).
       nextCheckAt: unavailable.length

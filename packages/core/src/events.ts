@@ -25,8 +25,10 @@ export interface CoreEventMap {
   'sites:updated': [null];
   /** A feed started failing (ok: false) or works again (ok: true). */
   'rss:feed-status': [{ feedId: string; title: string; ok: boolean; error: string | null }];
-  /** A missing-episode run finished: torrents added and sources that failed. */
-  'missing:run': [{ added: number; failing: { source: string; error: string }[] }];
+  /** A missing-episode run finished: torrents added, sources that failed and ones that answered. */
+  'missing:run': [
+    { added: number; failing: { source: string; error: string }[]; working: string[] },
+  ];
   /** Upcoming found For You items it hadn't shown before. */
   'upcoming:new': [UpcomingItemDTO[]];
   /** The notification history changed (new entry, read state, cleared). */

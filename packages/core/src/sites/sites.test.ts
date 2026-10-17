@@ -46,6 +46,14 @@ describe('templates', () => {
 });
 
 describe('search response parsing', () => {
+  it('reads an empty JSON response as no results', async () => {
+    const r = await parseSearch('', 'application/json; charset=utf-8', {
+      infoUrl: '',
+      mapping: { format: 'json', list: '', title: 'name' },
+    });
+    expect(r).toMatchObject({ format: 'json', hits: [] });
+  });
+
   it('detects JSON result lists and their fields', async () => {
     const body = JSON.stringify({
       status: 'ok',
@@ -180,7 +188,11 @@ describe('SiteService', () => {
       siteFetch,
       missingFetch: { fetchText: async () => '[]', fetchTorrent },
     });
-    core.settings.update({ missingUseNyaa: false, missingUseAnimeTosho: false });
+    core.settings.update({
+      missingUseNyaa: false,
+      missingUseAnimeTosho: false,
+      missingUseSubsPlease: false,
+    });
   });
   afterEach(async () => {
     await core.shutdown();

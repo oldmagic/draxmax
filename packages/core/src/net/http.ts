@@ -157,6 +157,8 @@ export class HttpError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    /** Seconds the server asked us to wait (Retry-After), if it said. */
+    readonly retryAfter?: number,
   ) {
     super(message);
   }
@@ -223,7 +225,12 @@ export async function fetchBytes(
   const ok = res.status >= 200 && res.status < 300;
   if (!ok && !opts.acceptErrors) {
     res.body.destroy();
-    throw new HttpError(`HTTP ${res.status} from ${parsed.host}`, res.status);
+    const wait = Number(res.headers['retry-after']);
+    throw new HttpError(
+      `HTTP ${res.status} from ${parsed.host}`,
+      res.status,
+      Number.isFinite(wait) && wait > 0 ? wait : undefined,
+    );
   }
   const declared = Number(res.headers['content-length'] ?? 0);
   if (declared > maxBytes) {

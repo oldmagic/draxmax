@@ -1,3 +1,4 @@
+import type { Dirent } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LibraryEntryDTO, TorrentItem } from '@draxmax/shared';
@@ -23,7 +24,9 @@ export interface LibraryRow {
 
 const VIDEO_EXT = /\.(mkv|mp4|avi|m4v|mov|wmv|ts|webm)$/i;
 const SCAN_DEPTH = 3;
-const MAX_SCAN_ENTRIES = 20_000;
+const MAX_SCAN_DIRS = 20_000;
+/** A folder named for anime ("/media/Anime") types everything below it. */
+const ANIME_PATH = /\banime\b/i;
 
 /** Stable id for a title/type pair (movies include the year to keep remakes apart). */
 export function libraryId(type: LibraryType, title: string, year?: number | null): string {
@@ -44,40 +47,122 @@ interface Candidate {
   seasons: Set<number>;
 }
 
-function addCandidate(map: Map<string, Candidate>, name: string): void {
+function addCandidate(map: Map<string, Candidate>, name: string, animeHint = false): void {
   const r = parseRelease(name);
   if (!r.key || r.key.length < 2) return;
-  const type = guessType(r);
+  // Inside an anime folder, anything with a season or episode is anime.
+  const type = animeHint && (r.season !== undefined || !r.year) ? 'anime' : guessType(r);
   if (type === 'other') return;
-  const id = libraryId(type, r.title, r.year);
-  const c = map.get(id) ?? {
-    title: r.title,
-    type,
-    year: r.year ?? null,
-    seasons: new Set<number>(),
-  };
-  if (r.season !== undefined) c.seasons.add(r.season);
+  merge(map, r.title, type, r.year ?? null, r.season !== undefined ? [r.season] : []);
+}
+
+function merge(
+  map: Map<string, Candidate>,
+  title: string,
+  type: LibraryType,
+  year: number | null,
+  seasons: Iterable<number>,
+): void {
+  const id = libraryId(type, title, year);
+  const c = map.get(id) ?? { title, type, year, seasons: new Set<number>() };
+  for (const s of seasons) c.seasons.add(s);
   map.set(id, c);
 }
 
-/** Recursively collects candidate names (folders and video files) under a directory. */
-async function scanFolder(root: string, depth: number, out: string[]): Promise<void> {
-  if (depth > SCAN_DEPTH || out.length > MAX_SCAN_ENTRIES) return;
-  let entries;
+const SEASON_DIR = /^(?:season[ ._-]?|s)(\d{1,3})$/i;
+/** "Universe.2021", "Fubar 2023", "The Rig (2023)": a show folder ending in its year. */
+const TRAILING_YEAR = /^(.*\S)[ ._]\(?((?:19|20)\d{2})\)?$/;
+
+const isVideo = (name: string) => VIDEO_EXT.test(name) && !/sample/i.test(name);
+
+/** A show folder: the folder names the show, its contents only say which seasons exist. */
+function addShow(
+  map: Map<string, Candidate>,
+  folder: string,
+  anime: boolean,
+  seasons: Iterable<number>,
+): void {
+  const y = TRAILING_YEAR.exec(folder);
+  const year = y && Number(y[2]) <= new Date().getFullYear() + 2 ? Number(y[2]) : null;
+  const r = parseRelease(year ? y![1]! : folder);
+  if (!r.key || r.key.length < 2) return;
+  merge(map, r.title, anime ? 'anime' : 'tv', year ?? r.year ?? null, seasons);
+}
+
+interface ScanState {
+  /** Directories read so far (bounded by MAX_SCAN_DIRS). */
+  dirs: number;
+}
+
+async function list(dir: string, state: ScanState): Promise<Dirent[]> {
+  if (state.dirs++ > MAX_SCAN_DIRS) return [];
   try {
-    entries = await readdir(root, { withFileTypes: true });
+    return (await readdir(dir, { withFileTypes: true })).filter((e) => !e.name.startsWith('.'));
   } catch {
-    return;
+    return [];
   }
-  for (const e of entries) {
-    if (e.name.startsWith('.')) continue;
-    if (e.isDirectory()) {
-      out.push(e.name);
-      await scanFolder(join(root, e.name), depth + 1, out);
-    } else if (VIDEO_EXT.test(e.name) && !/sample/i.test(e.name)) {
-      out.push(e.name);
+}
+
+/**
+ * Collects titles under a media folder. Each child is one title: a show folder
+ * ("Show/S01/…", or episodes directly inside), a release folder ("Movie.2019.1080p-GRP")
+ * or a loose video file. Episode files never become titles of their own. A folder that is
+ * none of these (say "Anime" or "Kids") is a grouping and is scanned the same way.
+ */
+async function scanFolder(
+  root: string,
+  depth: number,
+  anime: boolean,
+  out: Map<string, Candidate>,
+  state: ScanState,
+): Promise<void> {
+  for (const e of await list(root, state)) {
+    if (!e.isDirectory()) {
+      if (isVideo(e.name)) addCandidate(out, e.name, anime);
+      continue;
+    }
+    const path = join(root, e.name);
+    const children = await list(path, state);
+    const videos = children.filter((c) => !c.isDirectory() && isVideo(c.name)).map((c) => c.name);
+    const seasonDirs = children.filter((c) => c.isDirectory() && SEASON_DIR.test(c.name));
+    if (seasonDirs.length) {
+      // Without a hint from the path, the episode names of one season tell anime from TV.
+      const sample = anime
+        ? []
+        : (await list(join(path, seasonDirs[0]!.name), state)).map((c) => c.name).filter(isVideo);
+      addShow(
+        out,
+        e.name,
+        anime || looksAnime(sample),
+        seasonDirs.map((d) => Number(SEASON_DIR.exec(d.name)![1])),
+      );
+      continue;
+    }
+    const self = parseRelease(e.name);
+    if (guessType(self) !== 'other') {
+      addCandidate(out, e.name, anime);
+      continue;
+    }
+    const episodes = videos.map((v) => parseRelease(v)).filter((r) => r.season !== undefined);
+    if (episodes.length) {
+      addShow(
+        out,
+        e.name,
+        anime || looksAnime(videos),
+        episodes.map((r) => r.season!),
+      );
+    } else if (depth < SCAN_DEPTH) {
+      await scanFolder(path, depth + 1, anime || ANIME_PATH.test(e.name), out, state);
     }
   }
+}
+
+/** Most of the names carry anime markers (fansub tag, absolute numbering). */
+function looksAnime(names: string[]): boolean {
+  const sample = names.slice(0, 20);
+  return (
+    sample.length > 0 && sample.filter((n) => parseRelease(n).anime).length * 2 > sample.length
+  );
 }
 
 type Raw = Record<string, unknown>;
@@ -169,6 +254,19 @@ export class Library {
     return row;
   }
 
+  /** Entries in use, and how many of them still await their first TMDB/AniList lookup. */
+  progress(tmdb: boolean, anilist: boolean): { total: number; pending: number } {
+    const row = this.db
+      .prepare(
+        `SELECT count(*) AS total, coalesce(sum(lookup_done = 0 AND (
+           (? AND type IN ('tv', 'movie') AND tmdb_id IS NULL) OR
+           (? AND type = 'anime' AND anilist_id IS NULL))), 0) AS pending
+         FROM library_entries WHERE hidden = 0`,
+      )
+      .get(tmdb ? 1 : 0, anilist ? 1 : 0) as { total: number; pending: number };
+    return { total: row.total, pending: row.pending };
+  }
+
   setHidden(id: string, hidden: boolean): LibraryRow | null {
     const row = this.get(id);
     if (!row) return null;
@@ -193,13 +291,18 @@ export class Library {
       for (const f of t.files.slice(0, 200))
         if (VIDEO_EXT.test(f.name)) addCandidate(found, f.name);
     }
-    const names: string[] = [];
-    for (const folder of folders) await scanFolder(folder, 0, names);
+    const inFolders = new Map<string, Candidate>();
+    const state: ScanState = { dirs: 0 };
+    for (const folder of folders)
+      await scanFolder(folder, 0, ANIME_PATH.test(folder), inFolders, state);
     const folderIds = new Set<string>();
-    for (const n of names) {
-      const before = new Set(found.keys());
-      addCandidate(found, n);
-      for (const k of found.keys()) if (!before.has(k)) folderIds.add(k);
+    for (const [id, c] of inFolders) {
+      const prev = found.get(id);
+      if (prev) for (const s of c.seasons) prev.seasons.add(s);
+      else {
+        found.set(id, c);
+        folderIds.add(id);
+      }
     }
 
     const existing = new Map(this.all().map((e) => [e.id, e]));

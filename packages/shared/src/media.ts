@@ -25,6 +25,8 @@ export interface UpcomingResponse {
   /** ISO time of the last successful refresh. */
   updatedAt: string | null;
   sources: { tmdb: boolean; anilist: boolean };
+  /** Library titles in use, and how many still await their first TMDB/AniList lookup. */
+  library: { total: number; pending: number };
   /** Human-readable problems from the last refresh (e.g. bad API key). */
   errors: string[];
   refreshing: boolean;

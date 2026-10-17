@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -64,9 +64,17 @@ function fakeFetch(): typeof fetch {
             { id: 693134, title: 'Dune: Part Two', release_date: day(-10), popularity: 300 },
           ],
         });
-      if (p === '/movie/upcoming')
+      if (p === '/discover/movie')
         return json({
-          results: [{ id: 1, title: 'Big Upcoming Film', release_date: day(7), popularity: 500 }],
+          results:
+            url.searchParams.get('page') === '1' &&
+            url.searchParams.get('primary_release_date.gte') === day(1)
+              ? [{ id: 1, title: 'Big Upcoming Film', release_date: day(7), popularity: 500 }]
+              : [],
+        });
+      if (p === '/discover/tv')
+        return json({
+          results: [{ id: 4, name: 'New Show', first_air_date: day(30), popularity: 60 }],
         });
       if (p === '/movie/now_playing')
         return json({
@@ -191,6 +199,128 @@ describe('UpcomingService', () => {
     // New Releases: popularity + proximity, with a boost for library resemblance.
     expect(res.newReleases.map((i) => i.id)).toContain('tmdb-movie-1');
     expect(res.newReleases.map((i) => i.id)).toContain('anilist-999');
+    // Shows that haven't premiered are upcoming; ones on the air are airing.
+    expect(res.newReleases.find((i) => i.id === 'tmdb-tv-4')?.status).toBe('upcoming');
+    expect(res.newReleases.find((i) => i.id === 'tmdb-tv-3')?.status).toBe('airing');
+    expect(res.library).toEqual({ total: 3, pending: 0 });
+  });
+
+  it('reads media folders by structure: one title per show, never per episode', async () => {
+    const media = join(dir, 'media');
+    const touch = (...parts: string[]) => {
+      mkdirSync(join(media, ...parts.slice(0, -1)), { recursive: true });
+      writeFileSync(join(media, ...parts), '');
+    };
+    touch('Anime', 'Fate Apocrypha', 'S01', '08 - Beacon Of War.mkv');
+    touch('Anime', 'A Will Eternal', 'S01', '[Hall_of_C] Yi_Nian_Yong_Heng_AWE_47.mkv');
+    touch('Anime', 'A Will Eternal', 'S02', '[Hall_of_C] Yi_Nian_Yong_Heng_AWE_60.mkv');
+    touch('Anime', 'Gleipnir', '[HorribleSubs] Gleipnir - 10 [720p].mkv');
+    touch('TV', 'Universe.2021', 'S01', 'Universe.S01E03.NORDiC.1080p.WEB-DL.H.264-GRP.mkv');
+    touch('TV', 'Mountain Monsters', 'Season 6', 'Mountain Monsters S06E10 The Twisted Torch.mkv');
+    touch('TV', 'Subbed Show', 'S01', '[Group] Subbed Show - 01 [720p].mkv');
+    touch('Movies', 'Barb.Wire.1996.UNRATED.1080p.BluRay.x264-GRP', 'grp-barbwire1080.mkv');
+    touch('Movies', 'Tropic.Thunder.2008.2160p.WEB.H265-GRP.mkv');
+    core.settings.update({ libraryFolders: [media] });
+
+    const lib = (await core.upcoming.rescanLibrary()).filter((e) => e.source === 'folder');
+    expect(lib.map((e) => [e.type, e.title, e.seasonsOwned, e.year])).toEqual([
+      ['anime', 'A Will Eternal', [1, 2], null],
+      ['movie', 'Barb Wire', [], 1996],
+      ['anime', 'Fate Apocrypha', [1], null],
+      ['anime', 'Gleipnir', [1], null],
+      ['tv', 'Mountain Monsters', [6], null],
+      ['anime', 'Subbed Show', [1], null],
+      ['movie', 'Tropic Thunder', [], 2008],
+      ['tv', 'Universe', [1], 2021],
+    ]);
+  });
+
+  it('checks the whole library for For You, not just its first entries', async () => {
+    // Plenty of unmatched titles sorting ahead of the ones that have something new.
+    for (let n = 0; n < 80; n++) core.upcoming.library.addManual(`Aaa Filler ${n}`, 'other');
+    core.settings.update({ tmdbApiKey: 'test-key' });
+    await core.upcoming.refresh();
+    expect(core.upcoming.get().forYou.map((i) => i.id)).toEqual([
+      'tmdb-tv-63639-s4',
+      'anilist-182255',
+      'tmdb-tv-63639-s5',
+      'tmdb-movie-693134',
+    ]);
+  });
+
+  it('treats two library names for one show as the same show', async () => {
+    core.upcoming.library.addManual('Expanse', 'tv', [4]);
+    core.settings.update({ tmdbApiKey: 'test-key' });
+    await core.upcoming.refresh();
+    const ids = core.upcoming.get().forYou.map((i) => i.id);
+    expect(ids).toContain('tmdb-tv-63639-s5');
+    expect(ids).not.toContain('tmdb-tv-63639-s4');
+  });
+
+  it('waits out an AniList rate limit instead of giving up', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    const real = fakeFetch();
+    let limited = 0;
+    useFetchStub((async (input: string | URL, init?: RequestInit) => {
+      if (String(input).includes('anilist') && limited++ === 0)
+        return new Response('slow down', { status: 429, headers: { 'retry-after': '30' } });
+      return real(input, init);
+    }) as typeof fetch);
+    let done = false;
+    const refresh = core.upcoming.refresh().finally(() => (done = true));
+    let waited = 0;
+    while (!done) {
+      await new Promise((r) => setImmediate(r));
+      await vi.advanceTimersByTimeAsync(1000);
+      waited += 1000;
+    }
+    await refresh;
+    vi.useRealTimers();
+    expect(waited).toBeGreaterThanOrEqual(30_000);
+    const res = core.upcoming.get();
+    expect(res.errors).toEqual([]);
+    expect(res.forYou.map((i) => i.id)).toEqual(['anilist-182255']);
+  });
+
+  it('only announces For You items that are news, not a library being linked', async () => {
+    const announced: string[] = [];
+    core.events.on('upcoming:new', (items) => announced.push(...items.map((i) => i.id)));
+    await core.upcoming.refresh(); // AniList only: records the baseline
+    core.settings.update({ tmdbApiKey: 'test-key' });
+    await core.upcoming.refresh(); // links the TMDB titles: a catch-up, not news
+    expect(core.upcoming.get().forYou).toHaveLength(4);
+    expect(announced).toEqual([]);
+  });
+
+  it('skips sequels of anime seasons already owned', async () => {
+    // AniList has one entry per season: 10 → 11 → 12 (announced).
+    const season = (id: number, status: string, sequel?: object) => ({
+      id,
+      title: { romaji: `Chain Show ${id}` },
+      format: 'TV',
+      status,
+      relations: { edges: sequel ? [{ relationType: 'SEQUEL', node: sequel }] : [] },
+    });
+    const s12 = season(12, 'NOT_YET_RELEASED');
+    const s11 = season(11, 'FINISHED', s12);
+    const chain = new Map(
+      [10, 11, 12].map((id, n) => [id, [season(10, 'FINISHED', s11), s11, s12][n]]),
+    );
+    useFetchStub((async (_input: string | URL, init?: RequestInit) => {
+      const { variables } = JSON.parse(String(init?.body)) as { variables: { id?: number } };
+      const data = variables.id ? { Media: chain.get(variables.id) } : { Page: { media: [] } };
+      return new Response(JSON.stringify({ data }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch);
+    core.upcoming.library.addManual('Chain Show', 'anime', [1, 2], null, { anilistId: 10 });
+    await core.upcoming.refresh();
+    const res = core.upcoming.get();
+    expect(res.errors).toEqual([]);
+    // Season 2 is on disk, so only the announced third season is offered.
+    expect(res.forYou.map((i) => [i.id, i.reason])).toEqual([
+      ['anilist-12', 'Sequel to Chain Show 11'],
+    ]);
   });
 
   it('ignore hides an item; already-have records it and hides it', async () => {

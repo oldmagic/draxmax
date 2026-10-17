@@ -8,7 +8,7 @@
  * test data are not copied. Run: `node scripts/gen-site-presets.mjs`.
  */
 import { writeFileSync } from 'node:fs';
-import yaml from 'js-yaml';
+import { load as loadYaml } from 'js-yaml';
 
 const COMMIT = '478be9a9e9f9a92d046f13136c5daa30b6008ab1';
 const BASE = `https://raw.githubusercontent.com/autobrr/autobrr/${COMMIT}/internal/indexer/definitions`;
@@ -62,7 +62,7 @@ function findMatch(node) {
 async function load(name) {
   const res = await fetch(`${BASE}/${name}.yaml`);
   if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
-  return yaml.load(await res.text());
+  return loadYaml(await res.text());
 }
 
 const presets = [];

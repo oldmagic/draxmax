@@ -15,7 +15,7 @@ import {
   torznabLabel,
   type SearchResult,
 } from '../missing/sources.ts';
-import type { SettingsStore } from '../settings/settings.ts';
+import type { Settings, SettingsStore } from '../settings/settings.ts';
 import type { SiteService } from '../sites/site-service.ts';
 import type { AddOptions, TorrentManager } from '../torrent/manager.ts';
 import { parseMagnet } from '../torrent/sources.ts';
@@ -136,6 +136,15 @@ export class SearchService {
         detail: 'animetosho.org',
         locked: locked.has('missingUseAnimeTosho'),
       },
+      {
+        id: 'subsplease',
+        kind: 'builtin',
+        name: 'SubsPlease',
+        enabled: s.missingUseSubsPlease,
+        contentTypes: ['anime'],
+        detail: 'subsplease.org',
+        locked: locked.has('missingUseSubsPlease'),
+      },
       ...parseTorznabUrls(s.torznabUrls).map((u, i): SearchSourceDTO => ({
         id: `torznab:${i}`,
         kind: 'torznab',
@@ -158,8 +167,12 @@ export class SearchService {
   }
 
   setBuiltinEnabled(id: string, enabled: boolean): void {
-    const key =
-      id === 'nyaa' ? 'missingUseNyaa' : id === 'animetosho' ? 'missingUseAnimeTosho' : null;
+    const keys: Record<string, keyof Settings> = {
+      nyaa: 'missingUseNyaa',
+      animetosho: 'missingUseAnimeTosho',
+      subsplease: 'missingUseSubsPlease',
+    };
+    const key = Object.hasOwn(keys, id) ? keys[id] : null;
     if (!key) throw new CoreError('not_found', 'Unknown source');
     this.unlocked(key);
     this.deps.settings.update({ [key]: enabled });

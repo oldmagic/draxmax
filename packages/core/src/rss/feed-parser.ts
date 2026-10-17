@@ -105,7 +105,11 @@ function parseSeeders(item: Item): number | null {
 
 /** Parses RSS/Atom XML into items with stable ids and extracted torrent links. */
 export async function parseFeed(xml: string): Promise<ParsedFeed> {
-  const feed = await parser.parseString(xml);
+  // rss-parser only takes <rss version="2.x"> or "0.9x"; some trackers (nekoBT) send an
+  // RSS 2 feed labelled version="1.0". Real RSS 1.0 is <rdf:RDF>, so read any <rss> as 2.0.
+  const feed = await parser.parseString(
+    xml.replace(/<rss\b([^>]*?)\sversion\s*=\s*(["'])(?!2|0\.9)[^"']*\2/i, '<rss$1 version="2.0"'),
+  );
   const items = (feed.items ?? []).map((item): ParsedFeedItem => {
     const title = (item.title ?? '').trim() || '(untitled)';
     const date = item.isoDate ?? item.pubDate;

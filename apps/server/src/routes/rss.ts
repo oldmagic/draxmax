@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Core } from '@draxmax/core';
 import {
-  articleRefSchema,
+  articleDownloadSchema,
   feedCreateSchema,
   feedPatchSchema,
   markReadSchema,
@@ -75,8 +75,8 @@ export async function rssRoutes(app: FastifyInstance, { core }: { core: Core }):
     return reply.status(204).send();
   });
   app.post('/api/rss/articles/download', async (req) => {
-    const { feedId, id: articleId } = articleRefSchema.parse(req.body);
-    return rss.downloadArticle(feedId, articleId);
+    const { feedId, id: articleId, rule, ruleId } = articleDownloadSchema.parse(req.body);
+    return rss.downloadArticle(feedId, articleId, rule ? { rule, ruleId } : undefined);
   });
 
   app.get('/api/rss/rules', async () => rss.rules());

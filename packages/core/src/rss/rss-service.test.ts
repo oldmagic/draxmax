@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { rssConfigSchema } from '@draxmax/shared';
 import { createCore, type Core } from '../core.ts';
 import { FakeEngine, makeTorrentFile } from '../testing/index.ts';
+import { parseFeed } from './feed-parser.ts';
 
 const hash = (n: number) => n.toString(16).padStart(40, '0');
 
@@ -157,6 +158,84 @@ describe('RssService', () => {
     });
     core.rss.markRead(false, { feedId: feed.id });
     expect(core.rss.feeds()[0]!.unread).toBe(1);
+  });
+
+  it('skips episodes already on disk or in the client', async () => {
+    const folder = join(dir, 'Anime', 'Frieren');
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, '[Other] Frieren - 05 (720p).mkv'), '');
+    xml = feedXml([
+      {
+        title: '[SubsPlease] Frieren - 05 (1080p)',
+        hash: 5,
+        date: 'Mon, 01 Jan 2026 10:00:00 GMT',
+      },
+      {
+        title: '[SubsPlease] Frieren - 06 (1080p)',
+        hash: 6,
+        date: 'Mon, 01 Jan 2026 11:00:00 GMT',
+      },
+      { title: 'Frieren S01E06 720p WEB', hash: 7, date: 'Mon, 01 Jan 2026 12:00:00 GMT' },
+    ]);
+    const feed = await core.rss.addFeed('https://feeds.example/rss');
+    await core.rss.saveRule({
+      name: 'Frieren',
+      enabled: true,
+      priority: 0,
+      mustContain: ['SubsPlease Frieren'],
+      mustNotContain: [],
+      useRegex: false,
+      smartEpisodeFilter: false,
+      assignedFeedIds: [],
+      tags: [],
+      addPaused: true,
+      savePath: folder,
+    });
+    expect(core.torrents.list().map((t) => t.name)).toEqual(['[SubsPlease] Frieren - 06 (1080p)']);
+    expect(core.rss.history().find((h) => h.articleTitle.includes('- 05'))).toMatchObject({
+      status: 'duplicate',
+      error: 'Already have it: [Other] Frieren - 05 (720p).mkv',
+    });
+    // Episode 6 is in the client now, so another release of it is skipped too.
+    const other = core.rss.articles({ feedId: feed.id }).find((a) => a.title.startsWith('Frieren'));
+    expect(await core.rss.downloadArticle(feed.id, other!.id)).toEqual({
+      torrentId: null,
+      status: 'duplicate',
+      existing: '[SubsPlease] Frieren - 06 (1080p)',
+    });
+    expect(core.torrents.list()).toHaveLength(1);
+  });
+
+  it("downloads an article into a rule's folder and counts it for that rule", async () => {
+    xml = feedXml([
+      { title: 'Some Show S02E03 1080p', hash: 3, date: 'Mon, 01 Jan 2026 10:00:00 GMT' },
+    ]);
+    const feed = await core.rss.addFeed('https://feeds.example/rss');
+    const input = {
+      name: 'Some Show',
+      enabled: false,
+      priority: 0,
+      mustContain: ['Some Show'],
+      mustNotContain: [],
+      useRegex: false,
+      smartEpisodeFilter: true,
+      assignedFeedIds: [],
+      tags: ['tv'],
+      addPaused: true,
+      savePath: join(dir, 'TV', 'Some Show'),
+    };
+    const rule = await core.rss.saveRule(input);
+    const [a] = core.rss.articles({ feedId: feed.id });
+    expect(
+      await core.rss.downloadArticle(feed.id, a!.id, { rule: input, ruleId: rule.id }),
+    ).toMatchObject({
+      status: 'added',
+    });
+    expect(core.torrents.list()[0]).toMatchObject({ savePath: input.savePath, tags: ['tv'] });
+    expect(core.rss.history()[0]).toMatchObject({ ruleName: 'Some Show', status: 'added' });
+    await expect(
+      core.rss.downloadArticle(feed.id, a!.id, { rule: input, ruleId: 'nope' }),
+    ).rejects.toThrow(/Rule not found/);
   });
 
   it('imports a qBittorrent rules export, mapping feeds by URL and adding missing ones', async () => {
@@ -358,5 +437,24 @@ describe('RssService', () => {
       rules: { created: 0, updated: 0, deleted: 1 },
     });
     expect(core.rss.rules().map((r) => r.name)).toEqual(['Other']);
+  });
+});
+
+describe('feed parsing', () => {
+  it('reads an RSS 2 feed labelled version="1.0" (nekoBT Torznab)', async () => {
+    const feed =
+      await parseFeed(`<rss version="1.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+  <channel><title>nekoBT Torrents</title>
+    <item><title>[Group] Show - 03 [1080p]</title><guid>https://nekobt.to/torrents/1</guid>
+      <link>magnet:?xt=urn:btih:${hash(3)}</link><pubDate>Wed, 14 Oct 2026 15:34:23 +0000</pubDate>
+      <torznab:attr name="seeders" value="3"/></item>
+  </channel></rss>`);
+    expect(feed.title).toBe('nekoBT Torrents');
+    expect(feed.items).toHaveLength(1);
+    expect(feed.items[0]).toMatchObject({
+      title: '[Group] Show - 03 [1080p]',
+      torrentURL: `magnet:?xt=urn:btih:${hash(3)}`,
+      seeders: 3,
+    });
   });
 });

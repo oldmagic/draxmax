@@ -293,8 +293,8 @@ export function SettingsPage() {
               ]}
             />
             <p className="text-xs text-muted">
-              Where missing episodes are searched (Nyaa, AnimeTosho, Torznab indexers and your
-              tracker sites) is set on the{' '}
+              Where missing episodes are searched (Nyaa, AnimeTosho, SubsPlease, Torznab indexers
+              and tracker sites) is set on the{' '}
               <Link href="/sites" className="text-accent hover:underline">
                 Sites
               </Link>{' '}

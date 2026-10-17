@@ -214,11 +214,12 @@ export const api = {
     articles?: { feedId: string; id: string }[];
     read: boolean;
   }) => request<undefined>('POST', '/api/rss/articles/read', body),
-  downloadArticle: (feedId: string, id: string) =>
-    request<{ torrentId: string | null; status: 'added' | 'duplicate' }>(
+  /** With `rule`, the article is added the way that rule would add it (folder, category…). */
+  downloadArticle: (feedId: string, id: string, via?: { rule: RuleInput; ruleId?: string }) =>
+    request<{ torrentId: string | null; status: 'added' | 'duplicate'; existing?: string }>(
       'POST',
       '/api/rss/articles/download',
-      { feedId, id },
+      { feedId, id, ...via },
     ),
   rules: () => request<RuleDTO[]>('GET', '/api/rss/rules'),
   createRule: (r: RuleInput) => request<RuleDTO>('POST', '/api/rss/rules', r),

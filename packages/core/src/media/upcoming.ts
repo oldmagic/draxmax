@@ -13,10 +13,19 @@ const REFRESH_INTERVAL_MS = 12 * 3600_000;
 const DAY = 86_400_000;
 /** Minimum title similarity to accept a search hit as the same show/movie. */
 const MATCH_THRESHOLD = 0.72;
-/** Cap on external lookups per refresh so large libraries converge over several runs. */
-const MAX_LOOKUPS_PER_REFRESH = 40;
-/** Entries whose For-You checks we run per refresh (most recently updated first). */
-const MAX_FORYOU_ENTRIES = 60;
+/**
+ * A big library takes a while to link to TMDB/AniList the first time (AniList is rate
+ * limited), so a refresh works in rounds of this length and publishes after each one.
+ */
+const ROUND_MS = 45_000;
+/** A source failing this many times in a row is left alone until the next refresh. */
+const MAX_CONSECUTIVE_FAILURES = 3;
+/** How far ahead New Releases looks for movie and TV premieres. */
+const RELEASE_WINDOW_DAYS = 120;
+/** AniList formats that count as a season of a show. */
+const ANIME_SEASON_FORMATS = new Set(['TV', 'TV_SHORT', 'ONA']);
+/** Bumped when For You starts covering more of the library, so the catch-up isn't announced. */
+const STORE_VERSION = 2;
 
 export interface UpcomingDeps {
   db: Database;
@@ -28,10 +37,26 @@ export interface UpcomingDeps {
 }
 
 interface Stored {
+  v?: number;
   forYou: UpcomingItemDTO[];
   newReleases: UpcomingItemDTO[];
   updatedAt: string | null;
   errors: string[];
+}
+
+type Note = (source: string, err: unknown) => void;
+type Source = 'tmdb' | 'anilist';
+const LABEL: Record<Source, string> = { tmdb: 'TMDB', anilist: 'AniList' };
+
+/** State of one refresh, shared by its rounds. */
+interface Run {
+  note: Note;
+  /** Entries whose lookup failed; not retried until the next refresh. */
+  failed: Set<string>;
+  /** Entries linked during this refresh: what they bring into For You isn't news. */
+  linked: Set<string>;
+  /** Sources that kept failing and are skipped for the rest of the refresh. */
+  down: Set<Source>;
 }
 
 /** Days from now (negative = past). */
@@ -106,8 +131,10 @@ export class UpcomingService {
   }
 
   private isStale(): boolean {
-    const { updatedAt } = this.stored();
-    return !updatedAt || Date.now() - Date.parse(updatedAt) > REFRESH_INTERVAL_MS;
+    const { updatedAt, v } = this.stored();
+    // Lists built by an older version are redone straight away.
+    if (!updatedAt || v !== STORE_VERSION) return true;
+    return Date.now() - Date.parse(updatedAt) > REFRESH_INTERVAL_MS;
   }
 
   private actions(): Map<string, string> {
@@ -129,6 +156,7 @@ export class UpcomingService {
       newReleases: visible(s.newReleases),
       updatedAt: s.updatedAt,
       sources: { tmdb: settings.tmdbApiKey !== '', anilist: settings.anilistEnabled },
+      library: this.library.progress(settings.tmdbApiKey !== '', settings.anilistEnabled),
       errors: s.errors,
       refreshing: this.refreshing !== null,
     };
@@ -198,92 +226,162 @@ export class UpcomingService {
 
   private async doRefresh(): Promise<void> {
     const errors: string[] = [];
-    const note = (source: string, err: unknown) => {
-      const msg = `${source}: ${(err as Error).message}`;
-      if (!errors.includes(msg)) errors.push(msg);
+    const run: Run = {
+      note: (source, err) => {
+        const msg = `${source}: ${(err as Error).message}`;
+        if (!errors.includes(msg)) errors.push(msg);
+      },
+      failed: new Set(),
+      linked: new Set(),
+      down: new Set(),
     };
     this.cache.prune();
-    const library = (await this.rescanLibrary()).filter((e) => !e.hidden);
+    await this.rescanLibrary();
     const { tmdb, anilist } = this.clients();
-
-    await this.resolveIds(library, tmdb, anilist, note);
-    const resolved = this.library.all().filter((e) => !e.hidden);
-
-    const forYou: UpcomingItemDTO[] = [];
-    const owned = {
-      movies: new Set(resolved.filter((e) => e.type === 'movie' && e.tmdbId).map((e) => e.tmdbId!)),
-      anime: new Set(resolved.filter((e) => e.anilistId).map((e) => e.anilistId!)),
-    };
-    const targets = [...resolved]
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-      .slice(0, MAX_FORYOU_ENTRIES);
-    for (const entry of targets) {
-      try {
-        if (tmdb && entry.tmdbId && entry.type === 'tv')
-          forYou.push(...(await this.tvForYou(tmdb, entry)));
-        if (tmdb && entry.tmdbId && entry.type === 'movie')
-          forYou.push(...(await this.movieForYou(tmdb, entry, owned.movies)));
-        if (anilist && entry.anilistId)
-          forYou.push(...(await this.animeForYou(anilist, entry, owned.anime)));
-      } catch (err) {
-        note(entry.anilistId && !entry.tmdbId ? 'AniList' : 'TMDB', err);
-      }
-    }
+    const prev = this.stored();
 
     const newReleases: UpcomingItemDTO[] = [];
     if (tmdb) {
       try {
         newReleases.push(...(await this.tmdbReleases(tmdb)));
       } catch (err) {
-        note('TMDB', err);
+        run.note('TMDB', err);
       }
     }
     if (anilist) {
       try {
         newReleases.push(...(await this.anilistReleases(anilist)));
       } catch (err) {
-        note('AniList', err);
+        run.note('AniList', err);
       }
     }
+    // If a source failed entirely, keep the previous list rather than showing nothing.
+    const releases = newReleases.length || !errors.length ? dedupe(newReleases) : prev.newReleases;
 
-    // Library resemblance boosts general releases; anything already in For You moves there.
-    const forYouIds = new Set(forYou.map((i) => i.id));
-    const titles = resolved.map((e) => e.title);
-    const ranked = dedupe(newReleases)
-      .filter((i) => !forYouIds.has(i.id))
-      .map((i) => {
-        const sim = bestSimilarity(i.title, titles);
-        return sim >= 0.6
-          ? {
-              ...i,
-              relevanceScore: i.relevanceScore + Math.round(sim * 25),
-              matchedLibraryEntries: [],
-            }
-          : i;
-      })
-      .sort((a, b) => b.relevanceScore - a.relevanceScore)
-      .slice(0, 120);
+    // For You, per source. A source that is switched off contributes nothing.
+    const found: Record<Source, UpcomingItemDTO[]> = { tmdb: [], anilist: [] };
+    const publish = () => {
+      const forYou = dedupe([...found.tmdb, ...found.anilist]).sort(
+        (a, b) => b.relevanceScore - a.relevanceScore,
+      );
+      // Library resemblance boosts general releases; anything already in For You moves there.
+      const forYouIds = new Set(forYou.map((i) => i.id));
+      const titles = this.library
+        .all()
+        .filter((e) => !e.hidden)
+        .map((e) => e.title);
+      const ranked = releases
+        .filter((i) => !forYouIds.has(i.id))
+        .map((i) => {
+          const sim = bestSimilarity(i.title, titles);
+          return sim >= 0.6
+            ? {
+                ...i,
+                relevanceScore: i.relevanceScore + Math.round(sim * 25),
+                matchedLibraryEntries: [],
+              }
+            : i;
+        })
+        .sort((a, b) => b.relevanceScore - a.relevanceScore)
+        .slice(0, 200);
+      this.store({
+        v: STORE_VERSION,
+        forYou,
+        newReleases: ranked,
+        updatedAt: new Date().toISOString(),
+        errors,
+      });
+      this.announceNew(this.get().forYou, run.linked, prev.v !== STORE_VERSION);
+      this.deps.events.emit('upcoming:updated', null);
+    };
 
-    const prev = this.stored();
-    this.store({
-      forYou: dedupe(forYou).sort((a, b) => b.relevanceScore - a.relevanceScore),
-      // If a source failed entirely, keep the previous list rather than showing nothing.
-      newReleases: ranked.length || !errors.length ? ranked : prev.newReleases,
-      updatedAt: new Date().toISOString(),
-      errors,
-    });
-    this.announceNew(this.get().forYou);
+    // Each source links a batch of library entries, checks what's new for everything it
+    // has linked, and publishes; a slow source never holds up the other.
+    const work = async (source: Source, client: TmdbClient | AniListClient | null) => {
+      if (!client) return;
+      // Until its first round is through, a source keeps showing what it found last time.
+      found[source] = prev.forYou.filter((i) => i.source === source);
+      for (;;) {
+        const pending = await this.linkEntries(source, client, run, Date.now() + ROUND_MS);
+        if (this.closed) return;
+        found[source] = await this.forYouFrom(source, client, run, found[source]);
+        if (this.closed) return;
+        publish();
+        if (!pending) return;
+      }
+    };
+    await Promise.all([work('tmdb', tmdb), work('anilist', anilist)]);
+    if (!tmdb && !anilist) publish();
+  }
+
+  /** For You items for every library entry linked to `source`. */
+  private async forYouFrom(
+    source: Source,
+    client: TmdbClient | AniListClient,
+    run: Run,
+    previous: UpcomingItemDTO[],
+  ): Promise<UpcomingItemDTO[]> {
+    const entries = this.library.all().filter((e) => !e.hidden);
+    // The same show under two names ("House Of Dragon", "House of the Dragon") is one show.
+    const targets = new Map<string, LibraryRow>();
+    for (const e of entries) {
+      const id =
+        client instanceof TmdbClient
+          ? e.tmdbId && (e.type === 'tv' || e.type === 'movie') && `${e.type}:${e.tmdbId}`
+          : e.anilistId && String(e.anilistId);
+      if (!id) continue;
+      const same = targets.get(id);
+      targets.set(
+        id,
+        same ? { ...same, seasonsOwned: [...same.seasonsOwned, ...e.seasonsOwned] } : e,
+      );
+    }
+    const ownedMovies = new Set(
+      entries.filter((e) => e.type === 'movie' && e.tmdbId).map((e) => e.tmdbId!),
+    );
+    const ownedAnime = new Set(entries.filter((e) => e.anilistId).map((e) => e.anilistId!));
+
+    const out: UpcomingItemDTO[] = [];
+    let failures = 0;
+    for (const e of targets.values()) {
+      if (this.closed || run.down.has(source)) break;
+      try {
+        out.push(
+          ...(client instanceof AniListClient
+            ? await this.animeForYou(client, e, ownedAnime)
+            : e.type === 'tv'
+              ? await this.tvForYou(client, e)
+              : await this.movieForYou(client, e, ownedMovies)),
+        );
+        failures = 0;
+      } catch (err) {
+        run.note(LABEL[source], err);
+        if (++failures >= MAX_CONSECUTIVE_FAILURES) run.down.add(source);
+      }
+    }
+    // A source that went down keeps what it found last time.
+    return run.down.has(source) ? dedupe([...out, ...previous]) : out;
   }
 
   /**
-   * Emits For You items not seen before (new season, sequel, …). The first run only records
-   * what's there, so an existing library doesn't flood the notification history.
+   * Emits For You items not seen before (new season, sequel, …). What's there on the first
+   * run, or comes from entries linked just now, is only recorded, so an existing library
+   * doesn't flood the notification history.
    */
-  private announceNew(items: UpcomingItemDTO[]): void {
+  private announceNew(
+    items: UpcomingItemDTO[],
+    justLinked: ReadonlySet<string> = new Set(),
+    baseline = false,
+  ): void {
     const row = this.deps.db.prepare("SELECT value FROM kv WHERE key = 'upcoming_seen'").get() as
       { value: string } | undefined;
     const seen = new Set<string>(row ? (JSON.parse(row.value) as string[]) : []);
-    const fresh = row ? items.filter((i) => !seen.has(i.id)) : [];
+    const fresh =
+      row && !baseline
+        ? items.filter(
+            (i) => !seen.has(i.id) && !i.matchedLibraryEntries.some((id) => justLinked.has(id)),
+          )
+        : [];
     for (const i of items) seen.add(i.id);
     this.deps.db
       .prepare(
@@ -293,54 +391,81 @@ export class UpcomingService {
     if (fresh.length) this.deps.events.emit('upcoming:new', fresh);
   }
 
-  /** Links library entries to TMDB/AniList ids (once per entry). */
-  private async resolveIds(
-    entries: LibraryRow[],
-    tmdb: TmdbClient | null,
-    anilist: AniListClient | null,
-    note: (s: string, e: unknown) => void,
-  ): Promise<void> {
-    let budget = MAX_LOOKUPS_PER_REFRESH;
-    for (const e of entries) {
-      if (budget <= 0) break;
-      const needTmdb = tmdb && !e.tmdbId && (e.type === 'tv' || e.type === 'movie');
-      const needAni = anilist && !e.anilistId && e.type === 'anime';
-      if (e.lookupDone || (!needTmdb && !needAni)) continue;
-      budget--;
+  /**
+   * Links library entries to `source` ids (once per entry) until `deadline`. Returns how
+   * many entries are still waiting.
+   */
+  private async linkEntries(
+    source: Source,
+    client: TmdbClient | AniListClient,
+    run: Run,
+    deadline: number,
+  ): Promise<number> {
+    const todo = this.library
+      .all()
+      .filter((e) => !e.hidden && !e.lookupDone && !run.failed.has(e.id))
+      .filter((e) =>
+        client instanceof TmdbClient
+          ? !e.tmdbId && (e.type === 'tv' || e.type === 'movie')
+          : !e.anilistId && e.type === 'anime',
+      )
+      // Shows first: they are few and bring the most into For You.
+      .sort((a, b) => Number(b.type === 'tv') - Number(a.type === 'tv'));
+    let failures = 0;
+    let left = todo.length;
+    for (const e of todo) {
+      if (this.closed || run.down.has(source)) return 0;
       try {
-        if (needTmdb) {
-          const results =
-            e.type === 'tv'
-              ? await tmdb!.searchTv(e.title, e.year ?? undefined)
-              : await tmdb!.searchMovie(e.title, e.year ?? undefined);
-          const best = results
-            .map((r) => ({
-              r,
-              s: bestSimilarity(e.title, [r.name, r.title, r.original_name, r.original_title]),
-            }))
-            .filter((x) => x.s >= MATCH_THRESHOLD)
-            .sort((a, b) => b.s - a.s || (b.r.popularity ?? 0) - (a.r.popularity ?? 0))[0];
-          if (best) e.tmdbId = best.r.id;
-        }
-        if (needAni) {
-          const results = await anilist!.search(e.title);
-          const best = results
-            .map((m) => ({
-              m,
-              s: bestSimilarity(e.title, [m.title.english, m.title.romaji, ...(m.synonyms ?? [])]),
-            }))
-            .filter((x) => x.s >= MATCH_THRESHOLD)
-            .sort((a, b) => b.s - a.s)[0];
-          if (best) e.anilistId = best.m.id;
-        }
+        if (client instanceof TmdbClient) await this.linkTmdb(client, e);
+        else await this.linkAniList(client, e);
         e.lookupDone = true;
         this.library.save(e);
+        if (e.tmdbId || e.anilistId) run.linked.add(e.id);
+        failures = 0;
       } catch (err) {
-        note(needAni ? 'AniList' : 'TMDB', err);
-        // A bad key would fail every lookup; stop early.
-        if (/rejected the API key/.test((err as Error).message)) break;
+        run.note(LABEL[source], err);
+        run.failed.add(e.id);
+        // A bad key or an outage would fail every lookup; stop early.
+        if (
+          ++failures >= MAX_CONSECUTIVE_FAILURES ||
+          /rejected the API key/.test((err as Error).message)
+        ) {
+          run.down.add(source);
+          return 0;
+        }
       }
+      left--;
+      if (Date.now() >= deadline) break;
     }
+    return left;
+  }
+
+  private async linkTmdb(tmdb: TmdbClient, e: LibraryRow): Promise<void> {
+    const search = (year?: number) =>
+      e.type === 'tv' ? tmdb.searchTv(e.title, year) : tmdb.searchMovie(e.title, year);
+    const pick = (results: Awaited<ReturnType<typeof search>>) =>
+      results
+        .map((r) => ({
+          r,
+          s: bestSimilarity(e.title, [r.name, r.title, r.original_name, r.original_title]),
+        }))
+        .filter((x) => x.s >= MATCH_THRESHOLD)
+        .sort((a, b) => b.s - a.s || (b.r.popularity ?? 0) - (a.r.popularity ?? 0))[0];
+    // Release names are often a year off from TMDB's date; fall back to any year.
+    const best =
+      pick(await search(e.year ?? undefined)) ?? (e.year ? pick(await search()) : undefined);
+    if (best) e.tmdbId = best.r.id;
+  }
+
+  private async linkAniList(anilist: AniListClient, e: LibraryRow): Promise<void> {
+    const best = (await anilist.search(e.title))
+      .map((m) => ({
+        m,
+        s: bestSimilarity(e.title, [m.title.english, m.title.romaji, ...(m.synonyms ?? [])]),
+      }))
+      .filter((x) => x.s >= MATCH_THRESHOLD)
+      .sort((a, b) => b.s - a.s)[0];
+    if (best) e.anilistId = best.m.id;
   }
 
   private async tvForYou(tmdb: TmdbClient, e: LibraryRow): Promise<UpcomingItemDTO[]> {
@@ -433,7 +558,16 @@ export class UpcomingService {
     e: LibraryRow,
     ownedAnime: Set<number>,
   ): Promise<UpcomingItemDTO[]> {
-    const media = await anilist.withRelations(e.anilistId!);
+    let media = await anilist.withRelations(e.anilistId!);
+    // AniList lists every season as its own entry: step past the ones already owned.
+    const lastOwned = Math.min(e.seasonsOwned.length ? Math.max(...e.seasonsOwned) : 1, 20);
+    for (let season = 1; season < lastOwned; season++) {
+      const next = media.relations?.edges.find(
+        (x) => x.relationType === 'SEQUEL' && ANIME_SEASON_FORMATS.has(x.node.format ?? ''),
+      );
+      if (!next || next.node.status === 'NOT_YET_RELEASED') break;
+      media = await anilist.withRelations(next.node.id);
+    }
     const out: UpcomingItemDTO[] = [];
     const toItem = (
       m: AniMedia,
@@ -493,16 +627,22 @@ export class UpcomingService {
   }
 
   private async tmdbReleases(tmdb: TmdbClient): Promise<UpcomingItemDTO[]> {
-    const [upcoming, nowPlaying, onAir] = await Promise.all([
-      tmdb.list('/movie/upcoming'),
+    // TMDB's own "upcoming" list is mostly films already out, so ask for the dates we mean.
+    const from = new Date(Date.now() + DAY).toISOString().slice(0, 10);
+    const to = new Date(Date.now() + RELEASE_WINDOW_DAYS * DAY).toISOString().slice(0, 10);
+    const [upcoming, upcoming2, nowPlaying, onAir, premieres] = await Promise.all([
+      tmdb.discover('movie', from, to, 1),
+      tmdb.discover('movie', from, to, 2),
       tmdb.list('/movie/now_playing'),
       tmdb.list('/tv/on_the_air'),
+      tmdb.discover('tv', from, to, 1),
     ]);
+    upcoming.push(...upcoming2);
     const maxPop = Math.max(
       1,
-      ...[...upcoming, ...nowPlaying, ...onAir].map((i) => i.popularity ?? 0),
+      ...[...upcoming, ...nowPlaying, ...onAir, ...premieres].map((i) => i.popularity ?? 0),
     );
-    const mk = (i: TmdbListItem, type: 'movie' | 'tv'): UpcomingItemDTO => {
+    const mk = (i: TmdbListItem, type: 'movie' | 'tv', premiere = false): UpcomingItemDTO => {
       const date = type === 'movie' ? i.release_date : i.first_air_date;
       return clean({
         id: `tmdb-${type}-${i.id}`,
@@ -516,13 +656,14 @@ export class UpcomingService {
         source: 'tmdb',
         externalIds: { tmdb: i.id },
         popularity: i.popularity ?? 0,
-        status: type === 'tv' ? 'airing' : statusFor(date),
+        status: statusFor(date, type === 'tv' && !premiere),
       });
     };
     return [
       ...upcoming.map((i) => mk(i, 'movie')),
       ...nowPlaying.map((i) => mk(i, 'movie')),
       ...onAir.map((i) => mk(i, 'tv')),
+      ...premieres.map((i) => mk(i, 'tv', true)),
     ];
   }
 

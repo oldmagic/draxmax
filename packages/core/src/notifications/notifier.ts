@@ -14,6 +14,9 @@ const ORIGIN: Record<string, (detail: string | null) => string> = {
  * the one place that decides what is worth recording and how it reads.
  */
 export function wireNotifications(events: CoreEvents, n: NotificationService): () => void {
+  // Search sources that are down. Like feeds, a source is reported when it starts failing and
+  // when it works again, not on every run while it stays down.
+  const failingSources = new Set<string>();
   const offs = [
     // One entry per added torrent; RSS and missing-episode downloads are filed under RSS.
     events.on('torrent:added', (t, { origin, detail }) =>
@@ -90,7 +93,9 @@ export function wireNotifications(events: CoreEvents, n: NotificationService): (
           link: '/rss',
           dedupeKey: 'missing:added',
         });
-      for (const f of r.failing)
+      for (const f of r.failing) {
+        if (failingSources.has(f.source)) continue;
+        failingSources.add(f.source);
         n.add({
           category: 'rss',
           level: 'warning',
@@ -99,6 +104,16 @@ export function wireNotifications(events: CoreEvents, n: NotificationService): (
           link: f.source.startsWith('Site: ') ? '/sites' : '/rss',
           dedupeKey: `source:${f.source}`,
         });
+      }
+      for (const source of r.working) {
+        if (!failingSources.delete(source)) continue;
+        n.add({
+          category: 'rss',
+          level: 'success',
+          title: `Search works again: ${source}`,
+          link: source.startsWith('Site: ') ? '/sites' : '/rss',
+        });
+      }
     }),
     events.on('upcoming:new', (items) => {
       for (const i of items.slice(0, 20))

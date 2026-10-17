@@ -144,31 +144,32 @@ describe('recorded events', () => {
     expect(rss[0]!.title).toBe('Feed works again: My Feed');
   });
 
-  it('records missing-episode runs and failing search sources', () => {
-    core.events.emit('missing:run', {
-      added: 2,
-      failing: [
-        { source: 'Site: SuperBits', error: 'Got a login page: check the session cookies' },
-      ],
-    });
-    core.events.emit('missing:run', {
-      added: 0,
-      failing: [
-        { source: 'Site: SuperBits', error: 'Got a login page: check the session cookies' },
-      ],
-    });
-    const items = core.notifications.list().items;
+  it('records missing-episode runs, and a failing search source once until it recovers', () => {
+    const down = [
+      { source: 'Site: SuperBits', error: 'Got a login page: check the session cookies' },
+    ];
+    core.events.emit('missing:run', { added: 2, failing: down, working: ['Nyaa'] });
+    // Later runs, past the dedupe window, while the source stays down.
+    core.notifications.markRead('all', true);
+    core.events.emit('missing:run', { added: 0, failing: down, working: ['Nyaa'] });
+    core.events.emit('missing:run', { added: 0, failing: down, working: [] });
+    let items = core.notifications.list().items;
     expect(items.find((i) => i.title === 'Missing episodes: 2 added')).toBeTruthy();
     const failing = items.filter((i) => i.title === 'Search failing: Site: SuperBits');
     expect(failing).toHaveLength(1);
-    expect(failing[0]).toMatchObject({ count: 2, link: '/sites', level: 'warning' });
+    expect(failing[0]).toMatchObject({ count: 1, link: '/sites', level: 'warning' });
+    expect(core.notifications.unreadCount()).toBe(0);
+
+    core.events.emit('missing:run', { added: 0, failing: [], working: ['Site: SuperBits'] });
+    items = core.notifications.list().items;
+    expect(items[0]).toMatchObject({ title: 'Search works again: Site: SuperBits', read: false });
   });
 
   it('records new For You items, but not the first time Upcoming fills in', () => {
     const announce = (items: { id: string; title: string; reason?: string }[]) =>
       (Reflect.get(core.upcoming, 'announceNew') as (i: unknown[]) => void).call(
         core.upcoming,
-        items,
+        items.map((i) => ({ ...i, matchedLibraryEntries: [] })),
       );
     announce([{ id: 'a', title: 'The Expanse', reason: 'Season 6 of The Expanse is out' }]);
     expect(core.notifications.list({ category: 'upcoming' }).items).toHaveLength(0);
