@@ -65,6 +65,8 @@ interface Stored {
   shows: Record<string, MissingShowDTO>;
   lastRunAt: string | null;
   lastRunAdded: number;
+  /** Sources the last full run searched. Absent in state saved before this was tracked. */
+  sources?: string[];
 }
 
 const samePath = (a: string, b: string) => a.replace(/[\\/]+$/, '') === b.replace(/[\\/]+$/, '');
@@ -202,10 +204,14 @@ export class MissingService {
     const now = Date.now();
     const state = this.stored();
     const rules = this.rules();
+    // A source that earlier checks didn't search (newly added or enabled) may have what they
+    // couldn't find, so every show is due again rather than at its next weekly check.
+    const names = sources.map((x) => x.name);
+    const newSource = names.some((n) => !state.sources?.includes(n));
     const due = rules.filter((r) => {
       if (opts.ruleIds) return opts.ruleIds.includes(r.id);
       const next = state.shows[r.id]?.nextCheckAt;
-      return opts.force || !next || Date.parse(next) <= now;
+      return opts.force || newSource || !next || Date.parse(next) <= now;
     });
     let budget = settings.missingMaxPerRun;
     let added = 0;
@@ -229,6 +235,7 @@ export class MissingService {
       final.lastRunAt = new Date().toISOString();
       final.lastRunAdded = added;
     }
+    if (!opts.ruleIds) final.sources = names;
     this.store(final);
     if (due.length)
       this.deps.events.emit('missing:run', {
@@ -270,7 +277,9 @@ export class MissingService {
       .flatMap((t) => [t.name, ...t.files.map((f) => basename(f.path || f.name))]);
     const names = [...onDisk, ...inClient];
     const mode = rule.missingMode ?? 'default';
-    let id = inferIdentity(names);
+    // Decide the show by the episodes the rule itself would have picked: a folder can also hold
+    // another group's release, named differently ("… 2nd Season - 02" next to "… - 14").
+    let id = inferIdentity(names.filter((n) => matchesText(rule, n))) ?? inferIdentity(names);
     // An empty folder has nothing to compare against. Either wait for RSS to bring the first
     // episode, or (per rule, or by the global setting) fetch the season from episode 1.
     const fromStart =

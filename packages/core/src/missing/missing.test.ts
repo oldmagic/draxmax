@@ -172,6 +172,35 @@ ${[1, 2, 3, 4, 5]
     expect(core.missing.get().shows[0]).toMatchObject({ have: [1, 2, 3, 4], added: [] });
   });
 
+  it('checks every show again when a search source is added', async () => {
+    writeFileSync(join(show, '[SubsPlease] Chii Fuyo - 01 (720p) [ABC1].mkv'), '');
+    await core.rss.saveRule(input(show));
+    core.settings.update({ missingEnabled: true, missingUseSubsPlease: false });
+    await core.missing.run();
+    expect(fetchText).toHaveBeenCalled();
+    fetchText.mockClear();
+    await core.missing.run();
+    expect(fetchText).not.toHaveBeenCalled(); // not due yet
+
+    core.settings.update({ missingUseSubsPlease: true });
+    await core.missing.run();
+    expect(fetchText.mock.calls.some(([url]) => url.startsWith('https://subsplease.org/'))).toBe(
+      true,
+    );
+    fetchText.mockClear();
+    core.settings.update({ missingUseAnimeTosho: false }); // removing one changes nothing
+    await core.missing.run();
+    expect(fetchText).not.toHaveBeenCalled();
+  });
+
+  it("names the show after the rule's own episodes when the folder mixes groups", async () => {
+    writeFileSync(join(show, '[Erai-raws] Chii Fuyo 2nd Season - 02 [720p].mkv'), '');
+    writeFileSync(join(show, '[SubsPlease] Chii Fuyo - 03 (720p) [ABC3].mkv'), '');
+    await core.rss.saveRule({ ...input(show), mustContain: ['SubsPlease Chii Fuyo 720'] });
+    await core.missing.run({ force: true });
+    expect(core.missing.get().shows[0]).toMatchObject({ title: 'Chii Fuyo', have: [3] });
+  });
+
   it('skips empty folders and runs only when enabled unless forced', async () => {
     await core.rss.saveRule(input(show));
     core.settings.update({ missingEnabled: false });
