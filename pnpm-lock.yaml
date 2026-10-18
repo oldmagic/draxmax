@@ -9,7 +9,7 @@ patchedDependencies:
     hash: e070adcb23b806fbde2dc5b7c128605c59009601c55a2d062024517dcd6a41f7
     path: patches/bittorrent-protocol@5.0.9.patch
   webtorrent@3.0.21:
-    hash: 56844184b0fa1c48099758f578a85172782e94544acf2a89b83604a99e27f410
+    hash: 505041b2c3c087c094a7548ac363372ea7129834e26d5d5c8f60f7a1703d7b30
     path: patches/webtorrent@3.0.21.patch
 
 importers:
@@ -90,7 +90,7 @@ importers:
         version: 3.13.0
       webtorrent:
         specifier: ^3.0.21
-        version: 3.0.21(patch_hash=56844184b0fa1c48099758f578a85172782e94544acf2a89b83604a99e27f410)(bare-url@2.5.4)
+        version: 3.0.21(patch_hash=505041b2c3c087c094a7548ac363372ea7129834e26d5d5c8f60f7a1703d7b30)(bare-url@2.5.4)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -136,7 +136,7 @@ importers:
         version: 3.13.0
       webtorrent:
         specifier: ^3.0.21
-        version: 3.0.21(patch_hash=56844184b0fa1c48099758f578a85172782e94544acf2a89b83604a99e27f410)(bare-url@2.5.4)
+        version: 3.0.21(patch_hash=505041b2c3c087c094a7548ac363372ea7129834e26d5d5c8f60f7a1703d7b30)(bare-url@2.5.4)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -240,7 +240,7 @@ importers:
         version: 3.13.0
       webtorrent:
         specifier: ^3.0.21
-        version: 3.0.21(patch_hash=56844184b0fa1c48099758f578a85172782e94544acf2a89b83604a99e27f410)(bare-url@2.5.4)
+        version: 3.0.21(patch_hash=505041b2c3c087c094a7548ac363372ea7129834e26d5d5c8f60f7a1703d7b30)(bare-url@2.5.4)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -7411,7 +7411,7 @@ snapshots:
     dependencies:
       node-datachannel: 0.32.3
 
-  webtorrent@3.0.21(patch_hash=56844184b0fa1c48099758f578a85172782e94544acf2a89b83604a99e27f410)(bare-url@2.5.4):
+  webtorrent@3.0.21(patch_hash=505041b2c3c087c094a7548ac363372ea7129834e26d5d5c8f60f7a1703d7b30)(bare-url@2.5.4):
     dependencies:
       '@silentbot1/nat-api': 0.4.9
       '@thaunknown/simple-peer': 10.1.2

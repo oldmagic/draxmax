@@ -12,10 +12,10 @@ index 5f04bcae865dc16f91c5f1df79048afd3478bff3..e60c638ea435bf4c28e9fa20408c0226
      // If the connection has already been closed before the `connect` event is fired,
      // then `remoteAddress` will not be available, and we can't use this connection.
 diff --git a/lib/torrent.js b/lib/torrent.js
-index 771a87fa5004f5ff82e9b5c3d9d8b0d70e110dbf..c4361a0f99f4e9be3b907a20448b107d5ed126ac 100644
+index 771a87fa5004f5ff82e9b5c3d9d8b0d70e110dbf..e0ab3f3cf1cea3e5442c8530409623b809c1660f 100644
 --- a/lib/torrent.js
 +++ b/lib/torrent.js
-@@ -1652,8 +1652,18 @@ export default class Torrent extends EventEmitter {
+@@ -1652,8 +1652,35 @@ export default class Torrent extends EventEmitter {
        return false
      }
  
@@ -33,10 +33,27 @@ index 771a87fa5004f5ff82e9b5c3d9d8b0d70e110dbf..c4361a0f99f4e9be3b907a20448b107d
 +
 +    function genPieceFilterFunc (start, end, tried, rank, hotswap) {
 +      return i => i >= start && i <= end && !(i in tried) && wire.peerPieces.get(i) && requestable(i, hotswap) && (!rank || rank(i))
++    }
++
++    // Finish pieces already in progress before starting new ones. Rarest-first picks randomly
++    // among equally rare pieces, so each pipeline top-up would otherwise start a fresh piece:
++    // hundreds of half-downloaded pieces then sit in memory (16 MiB each on large torrents)
++    // and none reach disk. A piece's `_buffer` exists once any block has been reserved.
++    function requestStarted (filter) {
++      for (let i = 0; i < self.pieces.length; i++) {
++        const piece = self.pieces[i]
++        if (!piece || !piece._buffer || !filter(i)) continue
++        while (self._request(wire, i, self._critical[i] || false) &&
++          wire.requests.length < maxOutstandingRequests) {
++          // body intentionally empty
++        }
++        if (wire.requests.length >= maxOutstandingRequests) return true
++      }
++      return false
      }
  
      // TODO: Do we need both validateWire and trySelectWire?
-@@ -1670,7 +1680,7 @@ export default class Torrent extends EventEmitter {
+@@ -1670,7 +1697,7 @@ export default class Torrent extends EventEmitter {
            const len = end - start + 1
            const tried = {}
            let tries = 0
@@ -45,16 +62,21 @@ index 771a87fa5004f5ff82e9b5c3d9d8b0d70e110dbf..c4361a0f99f4e9be3b907a20448b107d
  
            while (tries < len) {
              piece = self._rarityMap.getRarestPiece(filter)
-@@ -1743,7 +1753,7 @@ export default class Torrent extends EventEmitter {
+@@ -1743,7 +1770,12 @@ export default class Torrent extends EventEmitter {
            const len = end - start + 1
            const tried = {}
            let tries = 0
 -          const filter = genPieceFilterFunc(start, end, tried, rank)
 +          const filter = genPieceFilterFunc(start, end, tried, rank, hotswap)
++
++          if (!hotswap && requestStarted(filter)) {
++            if (next.priority) shufflePriority(i)
++            return true
++          }
  
            while (tries < len) {
              piece = self._rarityMap.getRarestPiece(filter)
-@@ -2126,6 +2136,9 @@ export default class Torrent extends EventEmitter {
+@@ -2126,6 +2158,9 @@ export default class Torrent extends EventEmitter {
      }
  
      const conn = peer.conn

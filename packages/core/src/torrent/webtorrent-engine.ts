@@ -104,6 +104,10 @@ export class WebTorrentEngine implements TorrentEngine {
       announce: typeof source === 'string' ? opts.announce : undefined,
       deselect: true,
       strategy: opts.sequential ? 'sequential' : 'rarest',
+      // WebTorrent caches whole pieces (20 by default), filled by the startup verify and by
+      // every upload request, which reads the full piece to serve one 16 KiB block. At 16 MiB
+      // pieces that is 320 MiB per torrent; the OS page cache does this job for free.
+      storeCacheSlots: 0,
     });
     return new WebTorrentHandle(torrent, opts.announce);
   }

@@ -63,6 +63,7 @@ declare module 'webtorrent' {
     bitfield?: Uint8Array;
     skipVerify?: boolean;
     strategy?: 'sequential' | 'rarest';
+    storeCacheSlots?: number;
     destroyStoreOnDestroy?: boolean;
   }
 
