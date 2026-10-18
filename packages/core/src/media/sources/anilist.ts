@@ -155,13 +155,22 @@ export function aniDate(d: AniDate | null | undefined): string | undefined {
 /** Strips AniList's HTML-ish markup from descriptions. */
 export function aniPlain(desc: string | null | undefined): string | undefined {
   if (!desc) return undefined;
-  return (
-    desc
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
-      // Nested or broken tags ("<scr<b>ipt>") can leave a tag behind after one pass.
-      .replace(/[<>]/g, '')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim()
-  );
+  return stripTags(desc.replace(/<br\s*\/?>/gi, '\n'))
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Drops everything between `<` and `>`. A scan rather than a regex, so nested or broken
+ * tags ("<scr<b>ipt>") can't leave a tag behind.
+ */
+function stripTags(s: string): string {
+  let out = '';
+  let inTag = false;
+  for (const ch of s) {
+    if (ch === '<') inTag = true;
+    else if (ch === '>') inTag = false;
+    else if (!inTag) out += ch;
+  }
+  return out;
 }
