@@ -155,9 +155,13 @@ export function aniDate(d: AniDate | null | undefined): string | undefined {
 /** Strips AniList's HTML-ish markup from descriptions. */
 export function aniPlain(desc: string | null | undefined): string | undefined {
   if (!desc) return undefined;
-  return desc
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return (
+    desc
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      // Nested or broken tags ("<scr<b>ipt>") can leave a tag behind after one pass.
+      .replace(/[<>]/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  );
 }

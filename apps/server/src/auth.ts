@@ -146,18 +146,12 @@ export class AuthService {
       salt = randomBytes(16).toString('hex');
       this.setKv('session_salt', salt);
     }
-    const binding = sha256(
-      [
-        salt,
-        this.core.settings.get().webuiUsername,
-        this.opts.envPassword ?? this.core.settings.get().webuiPasswordHash,
-      ].join('\0'),
-    );
+    this.bindingSalt = salt;
+    const binding = this.binding();
     if (this.kv('session_binding') !== binding) {
       db.prepare('DELETE FROM sessions').run();
       this.setKv('session_binding', binding);
     }
-    this.bindingSalt = salt;
     db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
     for (const r of db.prepare('SELECT id_hash, expires_at FROM sessions').all() as unknown as {
       id_hash: string;
@@ -168,17 +162,22 @@ export class AuthService {
 
   private bindingSalt = '';
 
+  /**
+   * Fingerprint of the current login, stored to detect changes across restarts. The env
+   * password goes through scrypt (keyed by the persistent salt) so the stored value can't be
+   * brute-forced like a plain hash; the settings password is already an scrypt hash.
+   */
+  private binding(): string {
+    const { webuiUsername, webuiPasswordHash } = this.core.settings.get();
+    const secret =
+      this.opts.envPassword !== undefined
+        ? scryptSync(this.opts.envPassword, this.bindingSalt, 32).toString('base64')
+        : webuiPasswordHash;
+    return sha256([this.bindingSalt, webuiUsername, secret].join('\0'));
+  }
+
   private rebind(): void {
-    this.setKv(
-      'session_binding',
-      sha256(
-        [
-          this.bindingSalt,
-          this.core.settings.get().webuiUsername,
-          this.opts.envPassword ?? this.core.settings.get().webuiPasswordHash,
-        ].join('\0'),
-      ),
-    );
+    this.setKv('session_binding', this.binding());
   }
 
   /** Called when a session ends (its id hash), or all of them do (null). */

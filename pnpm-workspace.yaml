@@ -12,11 +12,13 @@ onlyBuiltDependencies:
 
 patchedDependencies:
   bittorrent-protocol@5.0.9: patches/bittorrent-protocol@5.0.9.patch
+  bittorrent-tracker@11.2.3: patches/bittorrent-tracker@11.2.3.patch
   webtorrent@3.0.21: patches/webtorrent@3.0.21.patch
 
-auditConfig:
-  ignoreGhsas:
-    # `ip` isPublic() SSRF (no fixed release). Only bittorrent-tracker's tracker *server*
-    # imports it (lib/server/parse-udp.js); DraxMax runs the client only and never calls
-    # isPublic/isPrivate. Re-check if bittorrent-tracker starts using it elsewhere.
-    - GHSA-2p57-rm9w-gvfp
+overrides:
+  # `ip` has an unfixed SSRF advisory (GHSA-2p57-rm9w-gvfp). bittorrent-tracker only uses it
+  # in its tracker server for one IPv4 conversion, which the patch above inlines.
+  bittorrent-tracker>ip: '-'
+  # global-agent 3 pulls roarr → sprintf-js (unfixed DoS, GHSA-hp3w-g68c-fv3c). 4.x drops
+  # both and keeps the bootstrap() API @electron/get calls (only when a proxy is configured).
+  global-agent@3: ^4.1.3

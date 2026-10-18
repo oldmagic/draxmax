@@ -85,7 +85,14 @@ interface Entry {
   savedSig?: string;
 }
 
-const samePath = (a: string, b: string) => a.replace(/[\\/]+$/, '') === b.replace(/[\\/]+$/, '');
+/** Without trailing separators. A loop, not /[\\/]+$/: that regex is quadratic on long runs of "/". */
+function trimSeparators(p: string): string {
+  let end = p.length;
+  while (end > 0 && (p[end - 1] === '/' || p[end - 1] === '\\')) end--;
+  return p.slice(0, end);
+}
+
+const samePath = (a: string, b: string) => trimSeparators(a) === trimSeparators(b);
 
 /**
  * Owns the torrent list: persistence, engine lifecycle, the download queue, and the mapping

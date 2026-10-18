@@ -1,5 +1,6 @@
 import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
+import fastifyRateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket, { type WebSocket } from '@fastify/websocket';
 import { existsSync } from 'node:fs';
@@ -139,6 +140,17 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   });
 
   await app.register(fastifyCookie);
+  // Per-client request cap, ahead of the auth hook so it also slows down credential guessing
+  // (login routes set a tighter limit). Generous enough for the Web UI and *arr apps polling
+  // the qBittorrent API; the in-memory store is bounded. The local machine is not limited.
+  await app.register(fastifyRateLimit, {
+    max: 600,
+    timeWindow: '1 minute',
+    cache: 5000,
+    allowList: (req) => auth.isLocal(req),
+    // No address once the socket has gone (and in injected test requests).
+    keyGenerator: (req) => req.ip ?? 'unknown',
+  });
   // Must come before the auth hook: the plugin's own hooks close upgrade sockets that get a
   // plain HTTP reply (e.g. 401). Registered after it, every rejected /api/ws leaked a socket.
   // Clients never send anything large; don't let one make the server buffer 100 MB (ws default).

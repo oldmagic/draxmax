@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { connect, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -571,6 +572,47 @@ describe('token auth', () => {
 
 describe('security', () => {
   beforeEach(() => setup());
+
+  it('rate-limits remote and proxied clients, but not the local machine', async () => {
+    const health = (extra: object) => app.inject({ url: '/api/health', ...extra });
+    for (let i = 0; i < 600; i++) expect((await health(REMOTE)).statusCode).toBe(200);
+    expect((await health(REMOTE)).statusCode).toBe(429);
+    expect((await health({ remoteAddress: '10.4.5.6' })).statusCode).toBe(200);
+    for (let i = 0; i < 601; i++) expect((await health({})).statusCode).toBe(200);
+    // Behind a local reverse proxy everyone arrives over loopback; that must not exempt them.
+    const proxied = { headers: { 'x-forwarded-for': '203.0.113.9' } };
+    for (let i = 0; i < 600; i++) await health(proxied);
+    expect((await health(proxied)).statusCode).toBe(429);
+  });
+
+  it('never stores a fast hash of the WEBUI_PASSWORD, and binds sessions to it', async () => {
+    await app.close();
+    await core.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+    await setup(undefined, { WEBUI_USERNAME: 'admin' }, 'hunter22!');
+    const kv = (key: string) =>
+      (core.db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as { value: string }).value;
+    const salt = kv('session_salt');
+    const fast = createHash('sha256').update([salt, 'admin', 'hunter22!'].join('\0')).digest('hex');
+    expect(kv('session_binding')).not.toBe(fast);
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'admin', password: 'hunter22!' },
+      ...REMOTE,
+    });
+    const cookie = cookieOf(login);
+    const ok = async () =>
+      (await app.inject({ url: '/api/torrents', headers: { cookie }, ...REMOTE })).statusCode;
+    expect(await ok()).toBe(200);
+    await app.close();
+    app = await buildServer({ core, auth: { envPassword: 'hunter22!' } });
+    expect(await ok()).toBe(200);
+    await app.close();
+    app = await buildServer({ core, auth: { envPassword: 'changed-it' } });
+    expect(await ok()).toBe(401);
+  });
 
   it('requires auth however the API path is spelled', async () => {
     for (const url of [

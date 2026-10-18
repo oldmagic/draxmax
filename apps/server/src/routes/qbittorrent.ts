@@ -142,7 +142,8 @@ export async function qbittorrentRoutes(
     return found;
   };
 
-  app.post('/api/v2/auth/login', async (req, reply) => {
+  const loginLimit = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
+  app.post('/api/v2/auth/login', loginLimit, async (req, reply) => {
     const { username = '', password = '' } = params(req);
     // No login configured: this machine is trusted, exactly as in the Web UI.
     if (!auth.configured()) return text(reply, auth.isAuthorized(req) ? 'Ok.' : 'Fails.');
