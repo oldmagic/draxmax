@@ -1,5 +1,10 @@
 import { basename } from 'node:path';
-import type { MissingResponse, MissingShowDTO, TorrentItem } from '@draxmax/shared';
+import type {
+  BuiltinIndexerId,
+  MissingResponse,
+  MissingShowDTO,
+  TorrentItem,
+} from '@draxmax/shared';
 import { MAGNET_RE } from '@draxmax/shared';
 import type { Database } from '../db/database.ts';
 import { CoreError } from '../errors.ts';
@@ -120,10 +125,14 @@ export class MissingService {
     const s = this.deps.settings();
     const fetchText = this.deps.fetchText ?? defaultFetchText;
     const gap = this.deps.sourceIntervalMs;
+    const edit = (id: BuiltinIndexerId) => {
+      const e = s.builtinIndexers[id];
+      return { baseUrl: e?.url, types: e?.contentTypes };
+    };
     return [
-      ...(s.missingUseNyaa ? [nyaaSource(fetchText, gap)] : []),
-      ...(s.missingUseAnimeTosho ? [animeToshoSource(fetchText, gap)] : []),
-      ...(s.missingUseSubsPlease ? [subsPleaseSource(fetchText, gap)] : []),
+      ...(s.missingUseNyaa ? [nyaaSource(fetchText, gap, edit('nyaa'))] : []),
+      ...(s.missingUseAnimeTosho ? [animeToshoSource(fetchText, gap, edit('animetosho'))] : []),
+      ...(s.missingUseSubsPlease ? [subsPleaseSource(fetchText, gap, edit('subsplease'))] : []),
       ...parseTorznabUrls(s.torznabUrls).map((u) => torznabSource(u, fetchText, gap)),
       ...(this.deps.sites?.sources() ?? []),
     ];

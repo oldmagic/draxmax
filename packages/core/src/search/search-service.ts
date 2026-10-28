@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import type {
-  ContentType,
-  SearchResponse,
-  SearchResultDTO,
-  SearchSourceDTO,
-  TorrentItem,
+import {
+  BUILTIN_INDEXERS,
+  type BuiltinIndexerId,
+  type ContentType,
+  type SearchResponse,
+  type SearchResultDTO,
+  type SearchSourceDTO,
+  type SourceEdit,
+  type TorrentItem,
 } from '@draxmax/shared';
 import { CoreError } from '../errors.ts';
 import { parseRelease } from '../media/parse-title.ts';
@@ -24,6 +27,39 @@ import { parseMagnet } from '../torrent/sources.ts';
 const RESULT_TTL_MS = 60 * 60_000;
 const MAX_CACHED = 5000;
 const MAX_RESULTS = 300;
+
+/** The setting that turns each built-in indexer on. */
+const ENABLED_KEY = {
+  nyaa: 'missingUseNyaa',
+  animetosho: 'missingUseAnimeTosho',
+  subsplease: 'missingUseSubsPlease',
+} as const satisfies Record<BuiltinIndexerId, keyof Settings>;
+
+function isBuiltin(id: string): id is BuiltinIndexerId {
+  return Object.hasOwn(ENABLED_KEY, id);
+}
+
+function httpUrl(raw: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw.trim());
+  } catch {
+    throw new CoreError('invalid_input', 'Not a valid URL');
+  }
+  if (!/^https?:$/.test(parsed.protocol))
+    throw new CoreError('invalid_input', 'Use an http(s) URL');
+  return parsed.toString();
+}
+
+/** A site's address without a trailing slash, e.g. `https://nyaa.land`. */
+function siteAddress(raw: string): string {
+  const u = new URL(
+    httpUrl(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw.trim()) ? raw : `https://${raw.trim()}`),
+  );
+  if (u.search || u.hash || u.username || u.password)
+    throw new CoreError('invalid_input', 'Enter just the address, e.g. https://nyaa.si');
+  return `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+}
 
 export interface SearchDeps {
   missing: Pick<MissingService, 'sources' | 'addResult'>;
@@ -118,33 +154,21 @@ export class SearchService {
     const s = this.deps.settings.get();
     const locked = new Set<string>(this.deps.settings.lockedKeys());
     return [
-      {
-        id: 'nyaa',
-        kind: 'builtin',
-        name: 'Nyaa',
-        enabled: s.missingUseNyaa,
-        contentTypes: ['anime'],
-        detail: 'nyaa.si',
-        locked: locked.has('missingUseNyaa'),
-      },
-      {
-        id: 'animetosho',
-        kind: 'builtin',
-        name: 'AnimeTosho',
-        enabled: s.missingUseAnimeTosho,
-        contentTypes: ['anime'],
-        detail: 'animetosho.org',
-        locked: locked.has('missingUseAnimeTosho'),
-      },
-      {
-        id: 'subsplease',
-        kind: 'builtin',
-        name: 'SubsPlease',
-        enabled: s.missingUseSubsPlease,
-        contentTypes: ['anime'],
-        detail: 'subsplease.org',
-        locked: locked.has('missingUseSubsPlease'),
-      },
+      ...BUILTIN_INDEXERS.map((b): SearchSourceDTO => {
+        const edit = s.builtinIndexers[b.id];
+        const url = edit?.url ?? b.url;
+        return {
+          id: b.id,
+          kind: 'builtin',
+          name: b.name,
+          enabled: s[ENABLED_KEY[b.id]],
+          contentTypes: edit?.contentTypes ?? ['anime'],
+          detail: new URL(url).host,
+          url,
+          defaultUrl: b.url,
+          locked: locked.has(ENABLED_KEY[b.id]),
+        };
+      }),
       ...parseTorznabUrls(s.torznabUrls).map((u, i): SearchSourceDTO => ({
         id: `torznab:${i}`,
         kind: 'torznab',
@@ -152,6 +176,8 @@ export class SearchService {
         enabled: true,
         contentTypes: [],
         detail: torznabLabel(u),
+        url: null,
+        defaultUrl: null,
         locked: locked.has('torznabUrls'),
       })),
       ...this.deps.sites.list().map((site): SearchSourceDTO => ({
@@ -161,37 +187,62 @@ export class SearchService {
         enabled: site.enabled && site.searchUrls.length > 0,
         contentTypes: site.contentTypes,
         detail: site.searchUrls.length ? null : 'No search URL yet',
+        url: null,
+        defaultUrl: null,
         locked: false,
       })),
     ];
   }
 
   setBuiltinEnabled(id: string, enabled: boolean): void {
-    const keys: Record<string, keyof Settings> = {
-      nyaa: 'missingUseNyaa',
-      animetosho: 'missingUseAnimeTosho',
-      subsplease: 'missingUseSubsPlease',
-    };
-    const key = Object.hasOwn(keys, id) ? keys[id] : null;
+    const key = isBuiltin(id) ? ENABLED_KEY[id] : null;
     if (!key) throw new CoreError('not_found', 'Unknown source');
     this.unlocked(key);
     this.deps.settings.update({ [key]: enabled });
   }
 
+  /** Changes a built-in indexer's address or content, or a Torznab endpoint's URL. */
+  editSource(id: string, edit: SourceEdit): void {
+    const m = /^torznab:(\d+)$/.exec(id);
+    if (m) {
+      if (!edit.url) throw new CoreError('invalid_input', 'Enter the Torznab URL');
+      this.unlocked('torznabUrls');
+      const urls = parseTorznabUrls(this.deps.settings.get().torznabUrls);
+      const index = Number(m[1]);
+      if (!urls[index]) throw new CoreError('not_found', 'Indexer not found');
+      const url = httpUrl(edit.url);
+      if (urls.some((u, i) => i !== index && u === url))
+        throw new CoreError('conflict', 'This indexer is already added');
+      urls[index] = url;
+      this.deps.settings.update({ torznabUrls: urls.join('\n') });
+      return;
+    }
+    if (!isBuiltin(id)) throw new CoreError('not_found', 'Unknown source');
+    const def = BUILTIN_INDEXERS.find((b) => b.id === id)!;
+    const all = this.deps.settings.get().builtinIndexers;
+    const next = { ...all[id] };
+    if (edit.url !== undefined) {
+      const url = edit.url ? siteAddress(edit.url) : null;
+      if (url && url !== def.url) next.url = url;
+      else delete next.url;
+    }
+    if (edit.contentTypes !== undefined) {
+      const types = edit.contentTypes ? [...new Set(edit.contentTypes)] : null;
+      if (types && !(types.length === 1 && types[0] === 'anime')) next.contentTypes = types;
+      else delete next.contentTypes;
+    }
+    const { [id]: _, ...others } = all;
+    this.deps.settings.update({
+      builtinIndexers: Object.keys(next).length ? { ...others, [id]: next } : others,
+    });
+  }
+
   addTorznab(url: string): void {
     this.unlocked('torznabUrls');
     const urls = parseTorznabUrls(this.deps.settings.get().torznabUrls);
-    let parsed: URL;
-    try {
-      parsed = new URL(url.trim());
-    } catch {
-      throw new CoreError('invalid_input', 'Not a valid URL');
-    }
-    if (!/^https?:$/.test(parsed.protocol))
-      throw new CoreError('invalid_input', 'Use an http(s) URL');
-    if (urls.includes(parsed.toString()))
-      throw new CoreError('conflict', 'This indexer is already added');
-    this.deps.settings.update({ torznabUrls: [...urls, parsed.toString()].join('\n') });
+    const parsed = httpUrl(url);
+    if (urls.includes(parsed)) throw new CoreError('conflict', 'This indexer is already added');
+    this.deps.settings.update({ torznabUrls: [...urls, parsed].join('\n') });
   }
 
   removeTorznab(index: number): void {

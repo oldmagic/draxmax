@@ -5,6 +5,7 @@ import {
   isAbsolutePath,
   searchAddSchema,
   searchQuerySchema,
+  sourceEditSchema,
   sourceTestSchema,
   torznabAddSchema,
 } from '@draxmax/shared';
@@ -41,6 +42,10 @@ export async function searchRoutes(app: FastifyInstance, { core }: { core: Core 
   });
   app.patch('/api/search/sources/:id', async (req) => {
     search.setBuiltinEnabled(id(req), z.object({ enabled: z.boolean() }).parse(req.body).enabled);
+    return search.sourceList();
+  });
+  app.put('/api/search/sources/:id', async (req) => {
+    search.editSource(id(req), sourceEditSchema.parse(req.body));
     return search.sourceList();
   });
   app.delete('/api/search/sources/:id', async (req) => {

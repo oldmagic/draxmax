@@ -23,6 +23,7 @@ import type {
   SiteTestResult,
   SearchResponse,
   SearchSourceDTO,
+  SourceEdit,
   ContentType,
   LibraryEntryDTO,
   AddMagnetRequest,
@@ -278,6 +279,8 @@ export const api = {
     request<SearchSourceDTO[]>('POST', '/api/search/sources/torznab', { url }),
   setSourceEnabled: (id: string, enabled: boolean) =>
     request<SearchSourceDTO[]>('PATCH', `/api/search/sources/${enc(id)}`, { enabled }),
+  editSource: (id: string, edit: SourceEdit) =>
+    request<SearchSourceDTO[]>('PUT', `/api/search/sources/${enc(id)}`, edit),
   removeSource: (id: string) =>
     request<SearchSourceDTO[]>('DELETE', `/api/search/sources/${enc(id)}`),
   testSource: (id: string, query: string) =>

@@ -1,4 +1,9 @@
-import { MAGNET_RE, type ContentType } from '@draxmax/shared';
+import {
+  BUILTIN_INDEXERS,
+  MAGNET_RE,
+  type BuiltinIndexerId,
+  type ContentType,
+} from '@draxmax/shared';
 import { fetchBytes } from '../net/http.ts';
 import { parseFeed } from '../rss/feed-parser.ts';
 
@@ -66,6 +71,21 @@ function paced<T>(ms: number, fn: (q: string) => Promise<T>): (q: string) => Pro
   };
 }
 
+/** A built-in indexer as the user edited it: another address, or other kinds of content. */
+export interface BuiltinOptions {
+  baseUrl?: string;
+  /** Replaces the anime-only default; empty = everything. */
+  types?: ContentType[];
+}
+
+function builtin(id: BuiltinIndexerId, opts: BuiltinOptions) {
+  const def = BUILTIN_INDEXERS.find((b) => b.id === id)!;
+  return {
+    base: (opts.baseUrl ?? def.url).replace(/\/+$/, ''),
+    carries: opts.types ? { animeOnly: false, types: opts.types } : { animeOnly: true },
+  };
+}
+
 const RSS_ACCEPT = 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.5';
 
 async function searchRss(fetchText: FetchText, url: string, source: string) {
@@ -80,16 +100,17 @@ async function searchRss(fetchText: FetchText, url: string, source: string) {
 }
 
 /** nyaa.si RSS search (anime, all languages). */
-export function nyaaSource(fetchText: FetchText, intervalMs = 3_000): SearchSource {
+export function nyaaSource(
+  fetchText: FetchText,
+  intervalMs = 3_000,
+  opts: BuiltinOptions = {},
+): SearchSource {
+  const { base, carries } = builtin('nyaa', opts);
   return {
     name: 'Nyaa',
-    animeOnly: true,
+    ...carries,
     search: paced(intervalMs, (q) =>
-      searchRss(
-        fetchText,
-        `https://nyaa.si/?page=rss&c=1_0&f=0&q=${encodeURIComponent(q)}`,
-        'Nyaa',
-      ),
+      searchRss(fetchText, `${base}/?page=rss&c=1_0&f=0&q=${encodeURIComponent(q)}`, 'Nyaa'),
     ),
   };
 }
@@ -104,10 +125,15 @@ interface SubsPleaseRelease {
  * SubsPlease's own release search: every episode and batch they put out, as magnet links.
  * It matches show names only, so group tags like "[SubsPlease]" are left out of the query.
  */
-export function subsPleaseSource(fetchText: FetchText, intervalMs = 3_000): SearchSource {
+export function subsPleaseSource(
+  fetchText: FetchText,
+  intervalMs = 3_000,
+  opts: BuiltinOptions = {},
+): SearchSource {
+  const { base, carries } = builtin('subsplease', opts);
   return {
     name: 'SubsPlease',
-    animeOnly: true,
+    ...carries,
     search: paced(intervalMs, async (q) => {
       const show = q
         .replace(/\[[^\]]*\]/g, ' ')
@@ -116,7 +142,7 @@ export function subsPleaseSource(fetchText: FetchText, intervalMs = 3_000): Sear
         .trim();
       if (!show) return [];
       const raw = await fetchText(
-        `https://subsplease.org/api/?f=search&tz=UTC&s=${encodeURIComponent(show)}`,
+        `${base}/api/?f=search&tz=UTC&s=${encodeURIComponent(show)}`,
         'application/json',
       );
       let data: unknown;
@@ -161,13 +187,18 @@ interface ToshoItem {
 }
 
 /** AnimeTosho JSON search (indexes Nyaa, TokyoTosho and others). */
-export function animeToshoSource(fetchText: FetchText, intervalMs = 3_000): SearchSource {
+export function animeToshoSource(
+  fetchText: FetchText,
+  intervalMs = 3_000,
+  opts: BuiltinOptions = {},
+): SearchSource {
+  const { base, carries } = builtin('animetosho', opts);
   return {
     name: 'AnimeTosho',
-    animeOnly: true,
+    ...carries,
     search: paced(intervalMs, async (q) => {
       const raw = await fetchText(
-        `https://animetosho.org/feed/json?q=${encodeURIComponent(q)}`,
+        `${base}/feed/json?q=${encodeURIComponent(q)}`,
         'application/json',
       );
       let items: unknown;

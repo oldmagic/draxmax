@@ -226,12 +226,23 @@ test('search, indexers, per-rule missing episodes and moving a torrent', async (
   await page.goto('/downloads');
   await page.keyboard.press('/');
   await expect(page).toHaveURL(/\/search$/);
-  await expect(page.getByText('Type a title to search Nyaa, AnimeTosho, SubsPlease.')).toBeVisible();
+  await expect(
+    page.getByText('Type a title to search Nyaa, AnimeTosho, SubsPlease.'),
+  ).toBeVisible();
 
   // Indexers live with the sites; API keys are never shown again.
   await page.getByRole('link', { name: 'Sites', exact: true }).first().click();
   const indexers = page.getByRole('list', { name: 'Indexers' });
-  await expect(indexers.getByText('AnimeTosho')).toBeVisible();
+  await expect(indexers.getByText('AnimeTosho', { exact: true })).toBeVisible();
+  // Built-in indexers can be pointed at a mirror and searched for more than anime.
+  await indexers.getByRole('button', { name: 'Edit Nyaa' }).click();
+  await page.getByRole('textbox', { name: 'Address' }).fill('https://nyaa.land');
+  await page.getByRole('checkbox', { name: 'TV' }).check();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(indexers.getByText('nyaa.land · Anime, TV')).toBeVisible();
+  await indexers.getByRole('button', { name: 'Edit Nyaa' }).click();
+  await page.getByRole('button', { name: 'Reset to default' }).click();
+  await expect(indexers.getByText('nyaa.si · Anime')).toBeVisible();
   await page
     .getByRole('textbox', { name: 'Torznab URL' })
     .fill('http://127.0.0.1:9/1/api?apikey=SECRETKEY');

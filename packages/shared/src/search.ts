@@ -35,6 +35,9 @@ export interface SearchSourceDTO {
   contentTypes: ContentType[];
   /** Torznab: the endpoint with its API key masked. */
   detail: string | null;
+  /** Built-in: the address searched, and the one it has when not edited. */
+  url: string | null;
+  defaultUrl: string | null;
   /** Set by an environment variable; can't be changed here. */
   locked: boolean;
 }
@@ -54,5 +57,27 @@ export const searchAddSchema = z.object({
 export const torznabAddSchema = z.object({
   url: z.url({ protocol: /^https?$/ }).max(2048),
 });
+
+/** The indexers that come with DraxMax. */
+export const BUILTIN_INDEXERS = [
+  { id: 'nyaa', name: 'Nyaa', url: 'https://nyaa.si' },
+  { id: 'animetosho', name: 'AnimeTosho', url: 'https://animetosho.org' },
+  { id: 'subsplease', name: 'SubsPlease', url: 'https://subsplease.org' },
+] as const;
+export type BuiltinIndexerId = (typeof BUILTIN_INDEXERS)[number]['id'];
+export const BUILTIN_INDEXER_IDS = BUILTIN_INDEXERS.map((b) => b.id) as [
+  BuiltinIndexerId,
+  ...BuiltinIndexerId[],
+];
+
+/**
+ * Editing a search source. Built-in: another address (e.g. a mirror) and what it carries;
+ * `null` puts either back to the default. Torznab: `url` replaces the endpoint.
+ */
+export const sourceEditSchema = z.object({
+  url: z.string().trim().max(2048).nullable().optional(),
+  contentTypes: z.array(z.enum(CONTENT_TYPES)).max(3).nullable().optional(),
+});
+export type SourceEdit = z.infer<typeof sourceEditSchema>;
 
 export const sourceTestSchema = z.object({ query: z.string().trim().min(1).max(200) });

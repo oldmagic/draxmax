@@ -250,6 +250,7 @@ export function createCore(opts: CoreOptions): Core {
           'firstRunCompleted',
           // Changed from the Sites page, which reports it there.
           'torznabUrls',
+          'builtinIndexers',
         ].includes(k),
     );
     if (shown.length)
@@ -294,6 +295,7 @@ export function createCore(opts: CoreOptions): Core {
         'missingUseNyaa',
         'missingUseAnimeTosho',
         'missingUseSubsPlease',
+        'builtinIndexers',
         'torznabUrls',
       ].some((k) => changed.includes(k as never))
     ) {

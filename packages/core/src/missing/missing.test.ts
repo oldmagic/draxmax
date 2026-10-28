@@ -6,7 +6,7 @@ import type { RuleInput } from '@draxmax/shared';
 import { createCore, type Core } from '../core.ts';
 import { FakeEngine } from '../testing/index.ts';
 import { inferIdentity, planDownloads, searchQuery, type Identity } from './plan.ts';
-import { subsPleaseSource, type SearchResult } from './sources.ts';
+import { sourceCarries, subsPleaseSource, type SearchResult } from './sources.ts';
 
 const hash = (n: number) => n.toString(16).padStart(40, '0');
 const result = (title: string, seeders: number | null = 10, n = 1): SearchResult => ({
@@ -298,8 +298,33 @@ ${[1, 2, 3, 4, 5]
       ['torznab:0', true],
     ]);
     expect(JSON.stringify(list)).not.toContain('SECRETKEY');
+    core.search.editSource('torznab:0', { url: 'http://jackett.lan:9117/api?apikey=OTHERKEY' });
+    expect(core.settings.get().torznabUrls).toBe('http://jackett.lan:9117/api?apikey=OTHERKEY');
     core.search.removeTorznab(0);
     expect(core.search.sourceList()).toHaveLength(3);
+  });
+
+  it('edits built-in indexers and puts them back to default', () => {
+    core.search.editSource('nyaa', { url: 'nyaa.land/', contentTypes: ['anime', 'tv'] });
+    expect(core.search.sourceList()[0]).toMatchObject({
+      url: 'https://nyaa.land',
+      defaultUrl: 'https://nyaa.si',
+      detail: 'nyaa.land',
+      contentTypes: ['anime', 'tv'],
+    });
+    const nyaa = core.missing.sources().find((x) => x.name === 'Nyaa')!;
+    expect(sourceCarries(nyaa, 'tv')).toBe(true);
+    expect(sourceCarries(nyaa, 'movies')).toBe(false);
+    expect(() => core.search.editSource('nyaa', { url: 'https://nyaa.land/?q=x' })).toThrow(
+      /just the address/,
+    );
+    expect(() => core.search.editSource('nope', { url: null })).toThrow(/Unknown/);
+    core.search.editSource('nyaa', { url: null, contentTypes: null });
+    expect(core.settings.get().builtinIndexers).toEqual({});
+    expect(core.search.sourceList()[0]).toMatchObject({
+      url: 'https://nyaa.si',
+      contentTypes: ['anime'],
+    });
   });
 
   it('suggests a rule from a release name, modelled on existing rules', async () => {

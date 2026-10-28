@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { BUILTIN_INDEXER_IDS, CONTENT_TYPES } from '@draxmax/shared';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isTrackerUrl } from '../torrent/trackers.ts';
@@ -93,6 +94,20 @@ export const settingsSchema = z
     missingUseNyaa: z.boolean().default(true),
     missingUseAnimeTosho: z.boolean().default(true),
     missingUseSubsPlease: z.boolean().default(true),
+    /** Edits to the built-in indexers: another address (a mirror) and what they carry. */
+    builtinIndexers: z
+      .partialRecord(
+        z.enum(BUILTIN_INDEXER_IDS),
+        z.object({
+          url: z
+            .string()
+            .max(2048)
+            .regex(/^https?:\/\/[^\s?#]+$/, 'Must be an http(s) address')
+            .optional(),
+          contentTypes: z.array(z.enum(CONTENT_TYPES)).max(3).optional(),
+        }),
+      )
+      .default({}),
     /** Torznab endpoints (Prowlarr/Jackett), including `apikey=`, separated by spaces or new lines. */
     torznabUrls: z.string().trim().max(16_384).default(''),
     /** Skip releases with fewer seeders (when the source reports them). */
