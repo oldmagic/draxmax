@@ -11,7 +11,7 @@ services:
     network_mode: host
     user: '1000:1000'
     environment:
-      - TZ=Europe/Paris
+      - TZ=Europe/Stockholm
       - DOWNLOAD_PATH=/data/torrents
       # Keep finished torrents in the list so Sonarr/Radarr can import them.
       - SEED_LIMIT_ACTION=pause
@@ -24,21 +24,21 @@ services:
 
   sonarr:
     image: lscr.io/linuxserver/sonarr:latest
-    environment: [PUID=1000, PGID=1000, TZ=Europe/Paris]
+    environment: [PUID=1000, PGID=1000, TZ=Europe/Stockholm]
     volumes: ['./config/sonarr:/config', '/srv/media:/data']
     ports: ['8989:8989']
     restart: unless-stopped
 
   radarr:
     image: lscr.io/linuxserver/radarr:latest
-    environment: [PUID=1000, PGID=1000, TZ=Europe/Paris]
+    environment: [PUID=1000, PGID=1000, TZ=Europe/Stockholm]
     volumes: ['./config/radarr:/config', '/srv/media:/data']
     ports: ['7878:7878']
     restart: unless-stopped
 
   prowlarr:
     image: lscr.io/linuxserver/prowlarr:latest
-    environment: [PUID=1000, PGID=1000, TZ=Europe/Paris]
+    environment: [PUID=1000, PGID=1000, TZ=Europe/Stockholm]
     volumes: ['./config/prowlarr:/config']
     ports: ['9696:9696']
     restart: unless-stopped

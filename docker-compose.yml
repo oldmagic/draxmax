@@ -17,7 +17,7 @@ services:
     # ./data/config and your save folders must be writable by it.
     user: '${PUID:-1000}:${PGID:-1000}'
     environment:
-      - TZ=${TZ:-UTC}
+      - TZ=${TZ:-Europe/Stockholm}
       # Address the Web UI listens on. With host networking, set this to your LAN address
       # (e.g. 192.168.1.10) in .env to keep it off other interfaces.
       - HOST=${HOST:-0.0.0.0}
