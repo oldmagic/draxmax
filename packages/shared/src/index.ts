@@ -7,4 +7,4 @@ export * from './notifications.ts';
 export * from './search.ts';
 export * from './xdcc.ts';
 export const APP_NAME = 'DraxMax';
-export const APP_VERSION = '0.1.14';
+export const APP_VERSION = '0.1.15';
