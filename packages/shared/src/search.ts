@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { CONTENT_TYPES, type ContentType } from './sites.ts';
+import type { XdccPackInfo } from './xdcc.ts';
 
 /** One release found by a search. The download link stays on the server (it may hold a passkey). */
 export interface SearchResultDTO {
@@ -15,6 +16,9 @@ export interface SearchResultDTO {
   episodes: number[];
   /** Already in the download list. */
   inList: boolean;
+  /** A torrent, or a file offered by an IRC bot (added with POST /api/xdcc). */
+  kind: 'torrent' | 'xdcc';
+  xdcc?: XdccPackInfo;
 }
 
 export interface SearchResponse {
@@ -25,10 +29,10 @@ export interface SearchResponse {
   errors: { source: string; error: string }[];
 }
 
-/** A place searches go to: built-in indexers, Torznab endpoints and configured sites. */
+/** A place searches go to: built-in indexers, Torznab endpoints, configured sites and XDCC indexers. */
 export interface SearchSourceDTO {
   id: string;
-  kind: 'builtin' | 'torznab' | 'site';
+  kind: 'builtin' | 'torznab' | 'site' | 'xdcc';
   name: string;
   enabled: boolean;
   /** Empty = everything. */

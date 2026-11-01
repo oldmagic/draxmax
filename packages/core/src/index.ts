@@ -18,6 +18,7 @@ export { RssService } from './rss/rss-service.ts';
 export { MissingService } from './missing/missing-service.ts';
 export { SiteService } from './sites/site-service.ts';
 export { SearchService } from './search/search-service.ts';
+export { XdccService } from './xdcc/xdcc-service.ts';
 export { WebhookNotifier, webhookRequest } from './notifications/webhook.ts';
 export { parseRelease, episodeKeys, titleKey, type ParsedRelease } from './media/parse-title.ts';
 export { UpcomingService } from './media/upcoming.ts';

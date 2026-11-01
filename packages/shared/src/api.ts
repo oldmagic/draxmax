@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { DownloadRule, TorrentItem } from './models.ts';
 import type { StatsSnapshot } from './stats.ts';
 import type { NotificationDTO } from './notifications.ts';
+import type { XdccTransferDTO } from './xdcc.ts';
 
 /** Recursively converts `Date` fields to ISO strings, as they appear on the wire. */
 export type Wire<T> = T extends Date
@@ -93,7 +94,10 @@ export type ServerEvent =
   | { type: 'upcoming:updated' }
   | { type: 'missing:updated' }
   | { type: 'sites:updated' }
-  | { type: 'notifications:updated'; unread: number; item: NotificationDTO | null };
+  | { type: 'notifications:updated'; unread: number; item: NotificationDTO | null }
+  | { type: 'xdcc:transfers'; transfers: XdccTransferDTO[] }
+  | { type: 'xdcc:done'; id: string; name: string }
+  | { type: 'xdcc:error'; id: string; name: string; error: string };
 
 // --- M2: torrent controls, trackers, categories, settings ---------------------
 

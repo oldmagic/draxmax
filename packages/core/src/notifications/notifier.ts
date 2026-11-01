@@ -36,6 +36,25 @@ export function wireNotifications(events: CoreEvents, n: NotificationService): (
         link: '/downloads',
       }),
     ),
+    events.on('xdcc:done', (t) =>
+      n.add({
+        category: 'download',
+        level: 'success',
+        title: `Finished: ${t.filename}`,
+        body: `XDCC from ${t.bot} on ${t.network}`,
+        link: '/xdcc',
+      }),
+    ),
+    events.on('xdcc:error', (t) =>
+      n.add({
+        category: 'download',
+        level: 'error',
+        title: `Failed: ${t.filename}`,
+        body: t.error ?? 'Unknown error',
+        link: '/xdcc',
+        dedupeKey: `xdcc-error:${t.id}`,
+      }),
+    ),
     events.on('torrent:done', (t) =>
       n.add({
         category: 'download',

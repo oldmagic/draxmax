@@ -4,6 +4,7 @@ A modern, easy-to-run BitTorrent client written in TypeScript. One core powers a
 
 - **Downloads:** magnets and `.torrent` files (paste or drop anywhere), file selection and priorities, sequential mode, categories and tags, a download queue, per-torrent and global trackers, reannounce/recheck, moving data to another folder, an optional folder for unfinished downloads, seeding limits by time or ratio, and fast resume after restarts.
 - **Search:** one search box over your tracker sites, Torznab indexers (Prowlarr/Jackett) and the built-in anime indexers. Add a result, or **Follow** a show to get a ready-made download rule.
+- **XDCC:** search also covers IRC bots' pack lists via [xdcc.info](https://xdcc.info/api-docs). Adding an XDCC result downloads it straight from the bot (IRC + DCC), with queueing, retries and resume, on the **XDCC** page.
 - **RSS:** feeds with advanced rules (wildcards or regex, qBittorrent-style episode filters, smart duplicate detection, per-feed assignment, ignore-days), a live "would match" preview, and download history.
 - **Upcoming:** *For You* surfaces the next season of shows you have, sequels to anime you watch and other films in collections you own. *New Releases* lists popular upcoming and airing titles. Data comes from TMDB and AniList.
 - **Stats:** live and 24-hour bandwidth charts, session and all-time totals, network health, disk usage and top consumers.
@@ -99,6 +100,9 @@ Everything is configurable in **Settings**. Every value can also be set by an en
 | `MISSING_USE_NYAA` / `MISSING_USE_ANIMETOSHO` / `MISSING_USE_SUBSPLEASE` | `true` / `true` / `true` | Built-in anime search sources (also under Sites → Indexers) |
 | `TORZNAB_URLS` | | Prowlarr/Jackett Torznab URLs with `apikey=`, space-separated; needed for live-action TV |
 | `MISSING_MIN_SEEDERS` / `MISSING_MAX_PER_RUN` | `1` / `25` | Skip dead releases; cap torrents added per run |
+| `XDCC_DOWNLOAD_PATH` | | Where XDCC downloads go; empty = `DOWNLOAD_PATH` |
+| `XDCC_MAX_ACTIVE` | `2` | XDCC transfers at once (one per bot) |
+| `XDCC_NICK` | | IRC nick; empty = a random nick per transfer |
 | `TMDB_API_KEY` | | Free at [themoviedb.org](https://www.themoviedb.org/settings/api); v3 key or v4 token |
 | `ANILIST_ENABLED` / `ANILIST_TOKEN` | `true` / | AniList works without a token |
 | `LIBRARY_FOLDERS` | | Media folders scanned for *For You* |
@@ -150,8 +154,13 @@ Everything is configurable in **Settings**. Every value can also be set by an en
   - **Per rule:** the rule editor's *Missing episodes* option overrides this: follow the setting, fill gaps only, fetch the whole season from episode 1, or don't search for this rule at all.
   - A batch is used only when every episode in it is missing. Releases with no seeders wait for the next check.
   - **RSS → Missing episodes** shows the status for each show and has *Check all now*.
+- **XDCC** (sidebar): files fetched from IRC bots. Search results marked *XDCC* show the bot, network, pack number and gets; **Add** queues them here.
+  - Each transfer joins the bot's channel under a random nick, sends `XDCC SEND #pack` and receives the file over DCC into `<name>.part`, renamed when complete. Bot replies (queue position, errors) are shown with the transfer.
+  - Dropped transfers retry up to 5 times and continue where they stopped (DCC RESUME), also after a restart. Replies like *Invalid pack number* or *banned* stop it straight away.
+  - For safety, IRC servers and DCC addresses on the local network are refused, file names from bots can't leave the save folder, and nothing larger than the bot announced is written. Passive (reverse) DCC isn't supported, so DraxMax needs no open port.
+  - XDCC results are not used by the missing-episode check, which stays torrent-only.
 - **Sites** (sidebar, `g` then `i`): everything DraxMax searches, used by Search and by the missing-episode check.
-  - **Indexers** (bottom of the list): turn the built-in anime indexers (Nyaa, AnimeTosho, SubsPlease) on or off, and add Prowlarr/Jackett Torznab feed URLs. API keys are stored encrypted and never shown again. The flask button tests a source.
+  - **Indexers** (bottom of the list): turn the built-in anime indexers (Nyaa, AnimeTosho, SubsPlease) and the XDCC indexer (xdcc.info) on or off or point them at a mirror, and add Prowlarr/Jackett Torznab feed URLs. API keys are stored encrypted and never shown again. The flask button tests a source.
   - **What this site carries:** tick Anime, TV shows and/or Movies and the site is only searched for those, so an anime rule doesn't query a general tracker. Leave all unticked to search it for everything.
   - **Download category:** torrents found on a site get this category when the rule doesn't set one.
   - **Add site** offers ~110 known trackers (SuperBits, IPTorrents, TorrentLeech, BTN, …), with their URLs, login fields and torrent/download link patterns filled in, or a custom site.
@@ -181,6 +190,7 @@ packages/core     UI-agnostic services, composed in createCore():
                     missing/  missing-episode check and the search sources (Nyaa, AnimeTosho, SubsPlease, Torznab)
                     sites/    tracker sites: credentials, search pages, release filters
                     search/   search over all sources; managing indexers
+                    xdcc/     XDCC: xdcc.info client, minimal IRC client, DCC receiver, transfer queue
                     rss/      feed fetcher/parser, rule engine (pure), scheduler, history
                     media/    release-name parser, library fingerprint, TMDB + AniList clients, Upcoming ranking
                     stats/    1 s sampling, per-minute history, all-time totals

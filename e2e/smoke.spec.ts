@@ -227,13 +227,23 @@ test('search, indexers, per-rule missing episodes and moving a torrent', async (
   await page.keyboard.press('/');
   await expect(page).toHaveURL(/\/search$/);
   await expect(
-    page.getByText('Type a title to search Nyaa, AnimeTosho, SubsPlease.'),
+    page.getByText('Type a title to search Nyaa, AnimeTosho, SubsPlease, xdcc.info.'),
   ).toBeVisible();
 
   // Indexers live with the sites; API keys are never shown again.
   await page.getByRole('link', { name: 'Sites', exact: true }).first().click();
   const indexers = page.getByRole('list', { name: 'Indexers' });
   await expect(indexers.getByText('AnimeTosho', { exact: true })).toBeVisible();
+  // XDCC (IRC bot) indexers sit with them and can be switched off.
+  await expect(indexers.getByText('xdcc.info · XDCC (IRC bots)')).toBeVisible();
+  await indexers.getByRole('switch', { name: 'Search xdcc.info' }).click();
+  await expect
+    .poll(async () => (await (await request.get('/api/settings')).json()).settings.xdccIndexers)
+    .toEqual({ xdccinfo: { enabled: false } });
+  await indexers.getByRole('switch', { name: 'Search xdcc.info' }).click();
+  await expect
+    .poll(async () => (await (await request.get('/api/settings')).json()).settings.xdccIndexers)
+    .toEqual({});
   // Built-in indexers can be pointed at a mirror and searched for more than anime.
   await indexers.getByRole('button', { name: 'Edit Nyaa' }).click();
   await page.getByRole('textbox', { name: 'Address' }).fill('https://nyaa.land');
@@ -256,6 +266,11 @@ test('search, indexers, per-rule missing episodes and moving a torrent', async (
   page.once('dialog', (d) => void d.accept());
   await indexers.getByRole('button', { name: /Remove Torznab/ }).click();
   await expect(indexers.getByText('127.0.0.1:9/1')).toHaveCount(0);
+
+  // XDCC transfers have their own page.
+  await page.getByRole('link', { name: 'XDCC', exact: true }).first().click();
+  await expect(page.getByText('No XDCC transfers yet.')).toBeVisible();
+  expect(await (await request.get('/api/xdcc')).json()).toEqual([]);
 
   // A rule can ask for the whole season, and says when it can't be checked.
   await page.goto('/rss');

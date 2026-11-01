@@ -18,6 +18,7 @@ import { searchRoutes } from './routes/search.ts';
 import { qbittorrentRoutes } from './routes/qbittorrent.ts';
 import { notificationRoutes } from './routes/notifications.ts';
 import { torrentRoutes } from './routes/torrents.ts';
+import { xdccRoutes } from './routes/xdcc.ts';
 
 export interface ServerOptions {
   core: Core;
@@ -297,6 +298,8 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   app.get('/api/ws', { websocket: true }, (socket, req) => {
     clients.set(socket, { ...auth.authKind(req), stale: false });
     socket.send(snapshotMsg(serialize()));
+    const transfers = core.xdcc.list();
+    if (transfers.length) socket.send(JSON.stringify({ type: 'xdcc:transfers', transfers }));
     socket.on('close', () => clients.delete(socket));
   });
 
@@ -309,7 +312,29 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
     }
   });
 
+  // XDCC changes arrive in bursts (status + progress); send the list at most 4 times a second.
+  let xdccTimer: NodeJS.Timeout | null = null;
+  const pushXdcc = () => {
+    if (xdccTimer || clients.size === 0) return;
+    xdccTimer = setTimeout(() => {
+      xdccTimer = null;
+      hub.broadcast({ type: 'xdcc:transfers', transfers: core.xdcc.list() });
+    }, 250);
+  };
+
   const unsubscribers = [
+    core.events.on('xdcc:updated', pushXdcc),
+    core.events.on('xdcc:done', (t) =>
+      hub.broadcast({ type: 'xdcc:done', id: t.id, name: t.filename }),
+    ),
+    core.events.on('xdcc:error', (t) =>
+      hub.broadcast({
+        type: 'xdcc:error',
+        id: t.id,
+        name: t.filename,
+        error: t.error ?? 'Unknown error',
+      }),
+    ),
     core.events.on('torrent:removed', (id) => hub.broadcast({ type: 'torrent:removed', id })),
     core.events.on('torrent:done', (t) =>
       hub.broadcast({ type: 'torrent:done', id: t.id, name: t.name }),
@@ -345,6 +370,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 
   app.addHook('onClose', async () => {
     clearInterval(timer);
+    if (xdccTimer) clearTimeout(xdccTimer);
     offSessionEnd();
     unsubscribers.forEach((off) => off());
     for (const ws of clients.keys()) ws.close(1001, 'Server shutting down');
@@ -373,6 +399,7 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
   await app.register(fsRoutes, { core });
   await app.register(siteRoutes, { core });
   await app.register(searchRoutes, { core });
+  await app.register(xdccRoutes, { core });
   await app.register(qbittorrentRoutes, { core, auth });
   await app.register(notificationRoutes, { core });
 

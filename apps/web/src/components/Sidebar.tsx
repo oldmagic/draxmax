@@ -4,6 +4,7 @@ import {
   CalendarClock,
   Download,
   Globe,
+  MessagesSquare,
   Rss,
   Search,
   Settings,
@@ -15,10 +16,12 @@ import { useUnreadCount } from '@/lib/notifications';
 import { cn } from '@/lib/utils';
 import { formatSpeed } from '@/lib/format';
 import { useTorrents } from '@/stores/torrents';
+import { useXdcc } from '@/stores/xdcc';
 
 const NAV = [
   { href: '/downloads', label: 'Downloads', icon: Download },
   { href: '/search', label: 'Search', icon: Search },
+  { href: '/xdcc', label: 'XDCC', icon: MessagesSquare },
   { href: '/upcoming', label: 'Upcoming', icon: CalendarClock },
   { href: '/rss', label: 'RSS', icon: Rss },
   { href: '/sites', label: 'Sites', icon: Globe },
@@ -31,9 +34,16 @@ export function Sidebar() {
   const [location] = useLocation();
   const torrents = useTorrents((s) => s.torrents);
   const connection = useTorrents((s) => s.connection);
-  const down = torrents.reduce((s, t) => s + t.downloadSpeed, 0);
+  const xdccSpeed = useXdcc((s) => s.transfers.reduce((n, t) => n + t.speed, 0));
+  const down = torrents.reduce((s, t) => s + t.downloadSpeed, 0) + xdccSpeed;
   const up = torrents.reduce((s, t) => s + t.uploadSpeed, 0);
   const active = torrents.filter((t) => t.status === 'downloading').length;
+  const xdccActive = useXdcc((s) =>
+    s.transfers.reduce(
+      (n, t) => (['connecting', 'requesting', 'downloading'].includes(t.status) ? n + 1 : n),
+      0,
+    ),
+  );
   const unread = useUnreadCount();
 
   return (
@@ -68,6 +78,11 @@ export function Sidebar() {
               <span className="relative">{label}</span>
               {href === '/notifications' && (
                 <UnreadBadge count={unread} className="relative ml-auto" />
+              )}
+              {href === '/xdcc' && xdccActive > 0 && (
+                <span className="relative ml-auto rounded-full bg-accent/15 px-1.5 text-xs text-accent tabular">
+                  {xdccActive}
+                </span>
               )}
               {href === '/downloads' && active > 0 && (
                 <span className="relative ml-auto rounded-full bg-accent/15 px-1.5 text-xs text-accent tabular">
@@ -132,7 +147,7 @@ export function MobileNav() {
             aria-label={label}
             aria-current={current ? 'page' : undefined}
             className={cn(
-              'relative rounded-xl p-2.5',
+              'relative rounded-xl p-2',
               current ? 'bg-surface-hover text-accent' : 'text-muted',
             )}
           >

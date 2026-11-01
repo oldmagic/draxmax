@@ -26,6 +26,7 @@ const SearchPage = page(() => import('@/pages/Search'), 'SearchPage');
 const UpcomingPage = page(() => import('@/pages/Upcoming'), 'UpcomingPage');
 const RssPage = page(() => import('@/pages/Rss'), 'RssPage');
 const SitesPage = page(() => import('@/pages/Sites'), 'SitesPage');
+const XdccPage = page(() => import('@/pages/Xdcc'), 'XdccPage');
 const NotificationsPage = page(() => import('@/pages/Notifications'), 'NotificationsPage');
 const StatsPage = page(() => import('@/pages/Stats'), 'StatsPage');
 const SettingsPage = page(() => import('@/pages/Settings'), 'SettingsPage');
@@ -107,6 +108,7 @@ function Shell() {
                     <Route path="/upcoming" component={UpcomingPage} />
                     <Route path="/rss" component={RssPage} />
                     <Route path="/sites" component={SitesPage} />
+                    <Route path="/xdcc" component={XdccPage} />
                     <Route path="/notifications" component={NotificationsPage} />
                     <Route path="/stats" component={StatsPage} />
                     <Route path="/settings" component={SettingsPage} />

@@ -5,6 +5,7 @@ import { wsUrl } from '@/lib/api';
 import { notify } from '@/lib/notify';
 import { queryClient } from '@/lib/query';
 import { useStats } from '@/stores/stats';
+import { useXdcc } from '@/stores/xdcc';
 
 export type ConnectionState = 'connecting' | 'open' | 'closed';
 
@@ -87,6 +88,17 @@ function handle(event: ServerEvent): void {
       break;
     case 'sites:updated':
       void queryClient.invalidateQueries({ queryKey: ['sites'] });
+      break;
+    case 'xdcc:transfers':
+      useXdcc.setState({ transfers: event.transfers, loaded: true });
+      break;
+    case 'xdcc:done':
+      toast.success('XDCC download complete', { description: event.name });
+      notify('complete', 'Download complete', event.name);
+      break;
+    case 'xdcc:error':
+      toast.error(`XDCC failed: ${event.name}`, { description: event.error });
+      notify('error', `XDCC failed: ${event.name}`, event.error);
       break;
     case 'notifications:updated':
       queryClient.setQueryData(['notifications', 'count'], { unread: event.unread });

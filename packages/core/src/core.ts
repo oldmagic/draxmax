@@ -17,6 +17,8 @@ import { NotificationService } from './notifications/notification-service.ts';
 import { wireNotifications } from './notifications/notifier.ts';
 import { WebhookNotifier, type WebhookSend } from './notifications/webhook.ts';
 import { SearchService } from './search/search-service.ts';
+import { XdccService } from './xdcc/xdcc-service.ts';
+import type { FetchJson } from './xdcc/xdcc-info.ts';
 import { fileKeyCipher } from './settings/secret-cipher.ts';
 import { SettingsStore, type SecretCipher } from './settings/settings.ts';
 import type { TorrentEngine } from './torrent/engine.ts';
@@ -39,6 +41,10 @@ export interface CoreOptions {
   missingFetch?: Pick<MissingDeps, 'fetchText' | 'fetchTorrent'>;
   /** Network override for site searches (tests). */
   siteFetch?: SiteFetch;
+  /** Network override for XDCC indexer searches (tests). */
+  xdccFetch?: FetchJson;
+  /** Let XDCC reach IRC servers and bots on local addresses (tests). */
+  xdccAllowPrivate?: boolean;
   /** Network override for the notification webhook (tests). */
   webhookSend?: WebhookSend;
   /** Don't start background schedulers and don't pace metadata APIs (tests). */
@@ -58,6 +64,7 @@ export interface Core {
   missing: MissingService;
   sites: SiteService;
   search: SearchService;
+  xdcc: XdccService;
   webhook: WebhookNotifier;
   notifications: NotificationService;
   upcoming: UpcomingService;
@@ -162,7 +169,22 @@ export function createCore(opts: CoreOptions): Core {
   });
   if (!opts.noSchedulers) missing.start();
 
-  const search = new SearchService({ missing, sites, torrents, settings });
+  const xdcc = new XdccService({
+    db,
+    events,
+    settings: () => settings.get(),
+    ...(opts.xdccAllowPrivate ? { allowPrivate: true } : {}),
+  });
+  if (!opts.noSchedulers) xdcc.start();
+
+  const search = new SearchService({
+    missing,
+    sites,
+    torrents,
+    settings,
+    xdcc,
+    ...(opts.xdccFetch ? { xdccFetch: opts.xdccFetch } : {}),
+  });
   const webhook = new WebhookNotifier({
     events,
     settings: () => settings.get(),
@@ -251,6 +273,7 @@ export function createCore(opts: CoreOptions): Core {
           // Changed from the Sites page, which reports it there.
           'torznabUrls',
           'builtinIndexers',
+          'xdccIndexers',
         ].includes(k),
     );
     if (shown.length)
@@ -277,6 +300,7 @@ export function createCore(opts: CoreOptions): Core {
     )
       applyLimits();
     if (changed.includes('maxActiveDownloads')) torrents.reschedule();
+    if (changed.includes('xdccMaxActive') && !opts.noSchedulers) xdcc.start();
     if (changed.includes('downloadPath')) mkdirSync(s.downloadPath, { recursive: true });
     if (changed.includes('incompletePath') && s.incompletePath)
       mkdirSync(s.incompletePath, { recursive: true });
@@ -311,6 +335,7 @@ export function createCore(opts: CoreOptions): Core {
     missing,
     sites,
     search,
+    xdcc,
     webhook,
     notifications,
     upcoming,
@@ -337,6 +362,7 @@ export function createCore(opts: CoreOptions): Core {
       upcoming.stop();
       stats.stop();
       watch.stop();
+      xdcc.stop();
       await torrents.shutdown();
       db.close();
     },

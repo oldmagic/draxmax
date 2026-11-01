@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { BUILTIN_INDEXER_IDS, CONTENT_TYPES } from '@draxmax/shared';
+import { BUILTIN_INDEXER_IDS, CONTENT_TYPES, XDCC_INDEXER_IDS } from '@draxmax/shared';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isTrackerUrl } from '../torrent/trackers.ts';
@@ -119,6 +119,32 @@ export const settingsSchema = z
      * `download` the season from episode 1.
      */
     missingWhenEmpty: z.enum(['wait', 'download']).default('wait'),
+
+    // --- XDCC ----------------------------------------------------------------
+    /** Edits to the built-in XDCC indexers: turned off, or another address (a mirror). */
+    xdccIndexers: z
+      .partialRecord(
+        z.enum(XDCC_INDEXER_IDS),
+        z.object({
+          enabled: z.boolean().optional(),
+          url: z
+            .string()
+            .max(2048)
+            .regex(/^https?:\/\/[^\s?#]+$/, 'Must be an http(s) address')
+            .optional(),
+        }),
+      )
+      .default({}),
+    /** Where XDCC downloads go. Empty = the download folder. */
+    xdccDownloadPath: z.string().trim().max(4096).default(''),
+    /** XDCC transfers running at once; the rest wait. */
+    xdccMaxActive: z.number().int().min(1).max(20).default(2),
+    /** IRC nick for XDCC requests. Empty = a new random one for each transfer. */
+    xdccNick: z
+      .string()
+      .trim()
+      .regex(/^([A-Za-z[\]\\`_^{|}][A-Za-z0-9[\]\\`_^{|}-]{0,29})?$/, 'Not a valid IRC nick')
+      .default(''),
 
     // --- Media intelligence ------------------------------------------------
     tmdbApiKey: z.string().trim().max(512).default(''),
@@ -252,6 +278,9 @@ const ENV_MAP: Record<string, { key: SettingsKey; kind: Kind }> = {
   LIBRARY_FOLDERS: { key: 'libraryFolders', kind: 'list' },
   SEARCH_URL_TEMPLATE: { key: 'searchUrlTemplate', kind: 'string' },
   WATCH_PATH: { key: 'watchPath', kind: 'string' },
+  XDCC_DOWNLOAD_PATH: { key: 'xdccDownloadPath', kind: 'string' },
+  XDCC_MAX_ACTIVE: { key: 'xdccMaxActive', kind: 'int' },
+  XDCC_NICK: { key: 'xdccNick', kind: 'string' },
   WEBUI_USERNAME: { key: 'webuiUsername', kind: 'string' },
   LOG_LEVEL: { key: 'logLevel', kind: 'string' },
 };

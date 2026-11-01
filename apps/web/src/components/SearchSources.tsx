@@ -64,11 +64,13 @@ export function SearchSources() {
               <div className="truncate text-xs text-muted">
                 {s.kind === 'torznab'
                   ? s.detail
-                  : `${s.detail} · ${
-                      s.contentTypes.length
-                        ? s.contentTypes.map((t) => TYPE_LABEL[t]).join(', ')
-                        : 'Everything'
-                    }`}
+                  : s.kind === 'xdcc'
+                    ? `${s.detail} · XDCC (IRC bots)`
+                    : `${s.detail} · ${
+                        s.contentTypes.length
+                          ? s.contentTypes.map((t) => TYPE_LABEL[t]).join(', ')
+                          : 'Everything'
+                      }`}
               </div>
             </div>
             {s.locked && (
@@ -96,7 +98,7 @@ export function SearchSources() {
             >
               <Pencil />
             </Button>
-            {s.kind === 'builtin' ? (
+            {s.kind === 'builtin' || s.kind === 'xdcc' ? (
               <Switch
                 label={`Search ${s.name}`}
                 checked={s.enabled}
@@ -167,7 +169,9 @@ function EditSource({
   onClose: () => void;
   onSaved: (list: SearchSourceDTO[]) => void;
 }) {
-  const builtin = source.kind === 'builtin';
+  // XDCC indexers are edited like the built-in ones, minus what they carry.
+  const builtin = source.kind === 'builtin' || source.kind === 'xdcc';
+  const xdcc = source.kind === 'xdcc';
   // The Torznab URL holds its API key and is never sent back, so it's entered again.
   const [url, setUrl] = useState(builtin ? (source.url ?? '') : '');
   const [types, setTypes] = useState<ContentType[]>(source.contentTypes);
@@ -176,9 +180,11 @@ function EditSource({
       api.editSource(
         source.id,
         builtin
-          ? reset
-            ? { url: null, contentTypes: null }
-            : { url: url.trim() || null, contentTypes: types }
+          ? xdcc
+            ? { url: reset ? null : url.trim() || null }
+            : reset
+              ? { url: null, contentTypes: null }
+              : { url: url.trim() || null, contentTypes: types }
           : { url: url.trim() },
       ),
     onSuccess: onSaved,
@@ -191,7 +197,9 @@ function EditSource({
         title={`Edit ${builtin ? source.name : 'Torznab indexer'}`}
         description={
           builtin
-            ? 'Point it at a mirror, or choose what it is searched for.'
+            ? xdcc
+              ? 'Point it at a mirror that serves the same API.'
+              : 'Point it at a mirror, or choose what it is searched for.'
             : `Replace the URL of ${source.detail ?? 'this indexer'}.`
         }
         className="w-[min(94vw,30rem)]"
@@ -222,7 +230,7 @@ function EditSource({
                 : 'Include apikey=. The current key is not shown.'}
             </span>
           </label>
-          {builtin && (
+          {builtin && !xdcc && (
             <div className="space-y-1.5">
               <span className="text-sm font-medium">What it carries</span>
               <div className="flex flex-wrap gap-4 pt-1">

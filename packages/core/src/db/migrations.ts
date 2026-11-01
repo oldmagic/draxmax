@@ -197,4 +197,29 @@ export const migrations: string[] = [
    WHERE dedupe_key LIKE 'source:%'
      AND id NOT IN (SELECT MAX(id) FROM notifications WHERE dedupe_key LIKE 'source:%' GROUP BY dedupe_key);
   `,
+  `
+  CREATE TABLE xdcc_transfers (
+    id            TEXT PRIMARY KEY,
+    filename      TEXT NOT NULL,
+    network       TEXT NOT NULL,
+    host          TEXT NOT NULL,
+    port          INTEGER NOT NULL,
+    tls           INTEGER NOT NULL,
+    bot           TEXT NOT NULL,
+    channel       TEXT,
+    pack          INTEGER NOT NULL,
+    size          INTEGER,
+    received      INTEGER NOT NULL DEFAULT 0,
+    status        TEXT NOT NULL,
+    message       TEXT,
+    error         TEXT,
+    save_path     TEXT NOT NULL,
+    part_path     TEXT,
+    file_path     TEXT,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    retry_at      INTEGER,
+    created_at    TEXT NOT NULL,
+    completed_at  TEXT
+  );
+  `,
 ];

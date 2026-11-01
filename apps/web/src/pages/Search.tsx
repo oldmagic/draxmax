@@ -1,5 +1,13 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { AlertTriangle, Check, Download, Loader2, Search as SearchIcon, Wand2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  Check,
+  Download,
+  Loader2,
+  MessagesSquare,
+  Search as SearchIcon,
+  Wand2,
+} from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { Link, useLocation, useSearch } from 'wouter';
@@ -13,6 +21,7 @@ import { formatBytes } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { useTorrents } from '@/stores/torrents';
 import { useUi } from '@/stores/ui';
+import { useXdcc } from '@/stores/xdcc';
 
 const TYPE_LABEL: Record<ContentType, string> = { anime: 'Anime', tv: 'TV', movies: 'Movies' };
 
@@ -53,7 +62,11 @@ export function SearchPage() {
     staleTime: 5 * 60_000,
     retry: false,
   });
-  const results = search.data?.results ?? [];
+  const all = search.data?.results ?? [];
+  // Torrents and XDCC packs together, or one of them.
+  const [via, setVia] = useState<'all' | 'torrent' | 'xdcc'>('all');
+  const xdccCount = all.filter((r) => r.kind === 'xdcc').length;
+  const results = via === 'all' ? all : all.filter((r) => r.kind === via);
 
   return (
     <div className="flex h-full flex-col">
@@ -107,11 +120,35 @@ export function SearchPage() {
       </form>
 
       <section className="glass flex min-h-0 flex-1 flex-col rounded-2xl">
-        {results.length > 0 && (
+        {all.length > 0 && (
           <div className="flex flex-wrap items-center gap-3 border-b px-4 py-2 text-xs text-muted">
             <span>
-              {results.length} results from {search.data!.searched.length} sources
+              {all.length} results from {search.data!.searched.length} sources
             </span>
+            {xdccCount > 0 && xdccCount < all.length && (
+              <div role="group" aria-label="Result type" className="flex rounded-lg border p-0.5">
+                {(
+                  [
+                    ['all', 'All'],
+                    ['torrent', `Torrents (${all.length - xdccCount})`],
+                    ['xdcc', `XDCC (${xdccCount})`],
+                  ] as const
+                ).map(([v, label]) => (
+                  <button
+                    key={v}
+                    type="button"
+                    aria-pressed={via === v}
+                    onClick={() => setVia(v)}
+                    className={cn(
+                      'rounded-md px-2 py-0.5 transition-colors',
+                      via === v ? 'bg-surface-hover text-fg' : 'hover:text-fg',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
             <label className="ml-auto flex items-center gap-2">
               Add to category
               <select
@@ -144,9 +181,13 @@ export function SearchPage() {
           className="min-h-0 flex-1 divide-y divide-border/60 overflow-y-auto"
           aria-label="Results"
         >
-          {results.map((r) => (
-            <Result key={r.id} result={r} category={category} />
-          ))}
+          {results.map((r) =>
+            r.kind === 'xdcc' ? (
+              <XdccResult key={r.id} result={r} />
+            ) : (
+              <Result key={r.id} result={r} category={category} />
+            ),
+          )}
           {results.length === 0 && (
             <li className="p-10 text-center text-sm text-muted">
               {search.isFetching ? (
@@ -241,6 +282,65 @@ function Result({ result: r, category }: { result: SearchResultDTO; category: st
           </Button>
         </Tooltip>
       )}
+      <Button
+        size="sm"
+        variant={added ? 'ghost' : 'primary'}
+        disabled={added || add.isPending}
+        aria-label={`Add ${r.title}`}
+        onClick={() => add.mutate()}
+      >
+        {add.isPending ? <Loader2 className="animate-spin" /> : added ? <Check /> : <Download />}
+        {added ? 'Added' : 'Add'}
+      </Button>
+    </li>
+  );
+}
+
+/** A pack offered by an IRC bot: added to the XDCC list instead of the torrents. */
+function XdccResult({ result: r }: { result: SearchResultDTO }) {
+  const [, navigate] = useLocation();
+  const [added, setAdded] = useState(r.inList);
+  const x = r.xdcc!;
+  const add = useMutation({
+    mutationFn: () => api.addXdcc({ id: r.id }),
+    onSuccess: (t) => {
+      setAdded(true);
+      useXdcc.getState().upsert(t);
+      toast.success('Added to XDCC', {
+        description: `${t.filename} from ${t.bot}`,
+        action: { label: 'Show', onClick: () => navigate('/xdcc') },
+      });
+    },
+    onError: (e) => {
+      if (/already/i.test(e.message)) setAdded(true);
+      toast.error(e.message);
+    },
+  });
+  const seen = x.lastSeen ? new Date(x.lastSeen) : null;
+  return (
+    <li className="flex items-center gap-3 px-4 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium" title={r.title}>
+          {r.title}
+        </div>
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 text-xs text-muted tabular">
+          <Badge tone="info">
+            <MessagesSquare className="mr-1 inline size-3" />
+            XDCC
+          </Badge>
+          <span title={x.channel ? `${x.network} ${x.channel}` : x.network}>
+            {x.bot} · {x.network} · #{x.pack}
+          </span>
+          {r.size ? <span>{formatBytes(r.size)}</span> : null}
+          {x.gets !== null && (
+            <span>
+              {x.gets} {x.gets === 1 ? 'get' : 'gets'}
+            </span>
+          )}
+          {seen && <span title={seen.toLocaleString()}>seen {seen.toLocaleDateString()}</span>}
+          {added && <Badge tone="success">In your XDCC list</Badge>}
+        </div>
+      </div>
       <Button
         size="sm"
         variant={added ? 'ghost' : 'primary'}

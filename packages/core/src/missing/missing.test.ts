@@ -137,6 +137,8 @@ ${[1, 2, 3, 4, 5]
       env: {},
       noSchedulers: true,
       missingFetch: { fetchText },
+      // Never the real xdcc.info from tests.
+      xdccFetch: (async () => ({ results: [] })) as never,
     });
   });
   afterEach(async () => {
@@ -266,7 +268,7 @@ ${[1, 2, 3, 4, 5]
 
   it('searches from the UI, hands out handles instead of links, and adds by handle', async () => {
     const res = await core.search.search('Chii Fuyo', 'anime');
-    expect(res.searched).toEqual(['Nyaa', 'AnimeTosho', 'SubsPlease']);
+    expect(res.searched).toEqual(['Nyaa', 'AnimeTosho', 'SubsPlease', 'xdcc.info']);
     expect(res.results[0]).toMatchObject({
       show: 'Chii Fuyo',
       episodes: [4],
@@ -280,8 +282,8 @@ ${[1, 2, 3, 4, 5]
     expect(
       (await core.search.search('Chii Fuyo')).results.find((r) => r.episodes[0] === 4)!.inList,
     ).toBe(true);
-    // Movies: no anime-only source is asked.
-    expect((await core.search.search('Dune', 'movies')).searched).toEqual([]);
+    // Movies: no anime-only source is asked (XDCC indexers carry everything).
+    expect((await core.search.search('Dune', 'movies')).searched).toEqual(['xdcc.info']);
   });
 
   it('manages built-in and Torznab sources without exposing API keys', () => {
@@ -296,12 +298,23 @@ ${[1, 2, 3, 4, 5]
       ['animetosho', true],
       ['subsplease', true],
       ['torznab:0', true],
+      ['xdccinfo', true],
     ]);
+    // The XDCC indexer can be turned off and pointed at a mirror like the built-in ones.
+    core.search.setBuiltinEnabled('xdccinfo', false);
+    core.search.editSource('xdccinfo', { url: 'https://mirror.example' });
+    expect(core.settings.get().xdccIndexers).toEqual({
+      xdccinfo: { enabled: false, url: 'https://mirror.example' },
+    });
+    expect(core.search.xdccIndexers()).toHaveLength(0);
+    core.search.setBuiltinEnabled('xdccinfo', true);
+    core.search.editSource('xdccinfo', { url: null });
+    expect(core.settings.get().xdccIndexers).toEqual({});
     expect(JSON.stringify(list)).not.toContain('SECRETKEY');
     core.search.editSource('torznab:0', { url: 'http://jackett.lan:9117/api?apikey=OTHERKEY' });
     expect(core.settings.get().torznabUrls).toBe('http://jackett.lan:9117/api?apikey=OTHERKEY');
     core.search.removeTorznab(0);
-    expect(core.search.sourceList()).toHaveLength(3);
+    expect(core.search.sourceList()).toHaveLength(4);
   });
 
   it('edits built-in indexers and puts them back to default', () => {

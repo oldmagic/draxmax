@@ -76,6 +76,16 @@ export class WebhookNotifier {
         (t) => on('notifyOnError') && this.push(`Failed: ${t.name}`, t.error ?? 'Unknown error'),
       ),
       events.on(
+        'xdcc:done',
+        (t) => on('notifyOnComplete') && this.push('XDCC download complete', t.filename),
+      ),
+      events.on(
+        'xdcc:error',
+        (t) =>
+          on('notifyOnError') &&
+          this.push(`XDCC failed: ${t.filename}`, t.error ?? 'Unknown error'),
+      ),
+      events.on(
         'rss:match',
         (m) =>
           m.status === 'added' &&

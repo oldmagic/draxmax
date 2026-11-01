@@ -1,5 +1,11 @@
 import { EventEmitter } from 'node:events';
-import type { NotificationDTO, StatsSnapshot, TorrentItem, UpcomingItemDTO } from '@draxmax/shared';
+import type {
+  NotificationDTO,
+  StatsSnapshot,
+  TorrentItem,
+  UpcomingItemDTO,
+  XdccTransferDTO,
+} from '@draxmax/shared';
 
 export interface CoreEventMap {
   /** Second argument: who added it ("rss" with the rule name, "watch", "manual", …). */
@@ -33,6 +39,11 @@ export interface CoreEventMap {
   'upcoming:new': [UpcomingItemDTO[]];
   /** The notification history changed (new entry, read state, cleared). */
   'notifications:updated': [{ unread: number; item: NotificationDTO | null }];
+  /** XDCC transfers changed (status, progress; at most about once a second while running). */
+  'xdcc:updated': [null];
+  'xdcc:done': [XdccTransferDTO];
+  /** An XDCC transfer failed for good (after its retries). */
+  'xdcc:error': [XdccTransferDTO];
   /** Recoverable engine problem (e.g. uTP port unavailable, continuing TCP-only). */
   'engine:warning': [Error];
 }

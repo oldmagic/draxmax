@@ -33,6 +33,7 @@ import type {
   SettingsResponse,
   TorrentDTO,
   UpdateTorrentRequest,
+  XdccTransferDTO,
 } from '@draxmax/shared';
 
 /**
@@ -275,6 +276,14 @@ export const api = {
   addSearchResult: (body: { id: string; category?: string; savePath?: string; paused?: boolean }) =>
     request<TorrentDTO>('POST', '/api/search/add', body),
   searchSources: () => request<SearchSourceDTO[]>('GET', '/api/search/sources'),
+  // XDCC
+  xdccTransfers: () => request<XdccTransferDTO[]>('GET', '/api/xdcc'),
+  addXdcc: (body: { id: string; savePath?: string }) =>
+    request<XdccTransferDTO>('POST', '/api/xdcc', body),
+  cancelXdcc: (id: string) => request<XdccTransferDTO>('POST', `/api/xdcc/${enc(id)}/cancel`),
+  retryXdcc: (id: string) => request<XdccTransferDTO>('POST', `/api/xdcc/${enc(id)}/retry`),
+  removeXdcc: (id: string, deleteFile = false) =>
+    request<{ ok: true }>('DELETE', `/api/xdcc/${enc(id)}${deleteFile ? '?deleteFile=true' : ''}`),
   addTorznab: (url: string) =>
     request<SearchSourceDTO[]>('POST', '/api/search/sources/torznab', { url }),
   setSourceEnabled: (id: string, enabled: boolean) =>

@@ -7,6 +7,7 @@ import {
   HelpCircle,
   KeyRound,
   Loader2,
+  MessagesSquare,
   Lock,
   LogOut,
   Monitor,
@@ -80,6 +81,7 @@ const SECTIONS = [
   { id: 'trackers', label: 'Trackers', icon: Tags },
   { id: 'rss', label: 'RSS', icon: Rss },
   { id: 'media', label: 'Upcoming & media', icon: Sparkles },
+  { id: 'xdcc', label: 'XDCC', icon: MessagesSquare },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'security', label: 'Web UI & security', icon: ShieldCheck },
   ...(desktop ? [{ id: 'desktop', label: 'Desktop', icon: Monitor }] : []),
@@ -357,6 +359,38 @@ export function SettingsPage() {
               hint="Use {query} where the title goes, e.g. https://example.org/search?q={query}. Empty = copy the title."
               placeholder="https://…?q={query}"
             />
+          </Section>
+          <Section id="xdcc" title="XDCC" icon={<MessagesSquare />}>
+            <PathField
+              ctx={ctx}
+              k="xdccDownloadPath"
+              label="Save XDCC downloads in"
+              hint="Optional. Empty = the default save folder."
+              optional
+            />
+            <NumberField
+              ctx={ctx}
+              k="xdccMaxActive"
+              label="XDCC transfers at once"
+              hint="Only one runs per bot at a time; bots rarely allow more."
+              min={1}
+              max={20}
+            />
+            <TextField
+              ctx={ctx}
+              k="xdccNick"
+              label="IRC nick"
+              hint="Optional. Empty = a new random nick for each transfer, which is the most private. Set one if a channel needs a registered nick."
+              placeholder="Random"
+            />
+            <p className="text-xs text-muted">
+              XDCC indexers (xdcc.info) are turned on and off on the{' '}
+              <Link href="/sites" className="text-accent hover:underline">
+                Sites
+              </Link>{' '}
+              page. DraxMax connects to IRC servers and bots only on the public internet, and only
+              bots' regular (active) DCC offers are supported.
+            </p>
           </Section>
           <Section id="notifications" title="Notifications" icon={<Bell />}>
             <SwitchField ctx={ctx} k="notifyOnComplete" label="When a download finishes" />
