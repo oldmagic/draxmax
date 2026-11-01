@@ -114,7 +114,11 @@ function fakeNetwork(file: Buffer, opts: { dropAfter?: number } = {}) {
     sock.write(part, () => (sends === 1 && opts.dropAfter ? sock.destroy() : undefined));
   });
   let resumeAt = 0;
+  const open = new Set<net.Socket>();
+  let closed = false;
   const irc = net.createServer((sock) => {
+    open.add(sock);
+    sock.on('close', () => open.delete(sock));
     sock.setEncoding('utf8');
     let nick = '';
     let buf = '';
@@ -134,7 +138,10 @@ function fakeNetwork(file: Buffer, opts: { dropAfter?: number } = {}) {
           send(`:${nick}!u@h JOIN ${arg}`);
           send(`:irc.test 366 ${nick} ${arg} :End of /NAMES list.`);
         }
-        const dccPort = (dcc.address() as net.AddressInfo).port;
+        // A client may still be talking after the test closed the network.
+        const address = dcc.address() as net.AddressInfo | null;
+        if (closed || !address) return;
+        const dccPort = address.port;
         if (line === 'PRIVMSG Bot :XDCC SEND #7') {
           send(`:Bot!b@h NOTICE ${nick} :\x02Sending\x02 you pack #7`);
           send(
@@ -162,6 +169,8 @@ function fakeNetwork(file: Buffer, opts: { dropAfter?: number } = {}) {
       return (irc.address() as net.AddressInfo).port;
     },
     close() {
+      closed = true;
+      for (const sock of open) sock.destroy();
       irc.close();
       dcc.close();
     },
