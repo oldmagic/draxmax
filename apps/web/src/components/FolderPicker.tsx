@@ -19,6 +19,7 @@ import { desktop } from '@/lib/desktop';
 import { formatBytes } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { useTorrents } from '@/stores/torrents';
+import { useXdcc } from '@/stores/xdcc';
 
 export interface Place {
   label: string;
@@ -30,6 +31,7 @@ export function useSavePlaces(): { defaultPath: string | undefined; places: Plac
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings });
   const { data: categories = [] } = useQuery({ queryKey: ['categories'], queryFn: api.categories });
   const torrents = useTorrents((s) => s.torrents);
+  const xdcc = useXdcc((s) => s.transfers);
   const defaultPath = settings?.settings.downloadPath as string | undefined;
 
   const places = useMemo(() => {
@@ -48,8 +50,12 @@ export function useSavePlaces(): { defaultPath: string | undefined; places: Plac
       if (out.length >= 12) break;
       add(t.savePath.split(/[\\/]/).filter(Boolean).pop() ?? t.savePath, t.savePath);
     }
+    for (const t of xdcc) {
+      if (out.length >= 16) break;
+      add(t.savePath.split(/[\\/]/).filter(Boolean).pop() ?? t.savePath, t.savePath);
+    }
     return out;
-  }, [defaultPath, categories, torrents]);
+  }, [defaultPath, categories, torrents, xdcc]);
 
   return { defaultPath, places };
 }

@@ -300,3 +300,86 @@ test('search, indexers, per-rule missing episodes and moving a torrent', async (
     .toBe(`${savePath}-moved`);
   await request.delete(`/api/torrents/${id}`);
 });
+
+test('adding an XDCC result asks for the folder first', async ({ page }) => {
+  // The search answer is faked in the browser, so no real XDCC index is asked.
+  await page.route('**/api/search?*', (route) =>
+    route.fulfill({
+      json: {
+        query: 'frieren',
+        searched: ['xdcc.info'],
+        errors: [],
+        results: [
+          {
+            id: 'x1',
+            title: 'Frieren - 01 [1080p].mkv',
+            source: 'xdcc.info',
+            seeders: null,
+            size: 1_500_000_000,
+            show: 'Frieren',
+            season: null,
+            episodes: [1],
+            inList: false,
+            kind: 'xdcc',
+            xdcc: {
+              network: 'Rizon',
+              bot: 'Bot|1',
+              channel: '#anime',
+              pack: 42,
+              gets: 5,
+              lastSeen: null,
+            },
+          },
+        ],
+      },
+    }),
+  );
+  let body: unknown = null;
+  await page.route('**/api/xdcc', (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    body = route.request().postDataJSON();
+    return route.fulfill({
+      status: 201,
+      json: {
+        id: 't1',
+        filename: 'Frieren - 01 [1080p].mkv',
+        network: 'Rizon',
+        server: 'irc.rizon.net:6697',
+        bot: 'Bot|1',
+        channel: '#anime',
+        pack: 42,
+        size: 1_500_000_000,
+        received: 0,
+        speed: 0,
+        status: 'queued',
+        message: null,
+        error: null,
+        savePath: '/tmp/xdcc-e2e',
+        filePath: null,
+        attempts: 0,
+        createdAt: new Date().toISOString(),
+        completedAt: null,
+      },
+    });
+  });
+
+  await page.goto('/search?q=frieren');
+  await page.getByRole('button', { name: 'Add Frieren - 01 [1080p].mkv' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Download with XDCC' });
+  await expect(dialog.getByText('From Bot|1 on Rizon, pack #42')).toBeVisible();
+  // Nothing is requested until a folder is confirmed.
+  expect(body).toBeNull();
+  await dialog.getByLabel('Save to').fill('relative/path');
+  await expect(dialog.getByText('Use a full path, e.g. /media/1/Anime.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Download' })).toBeDisabled();
+  await dialog.getByLabel('Save to').fill('/tmp/xdcc-e2e');
+  await dialog.getByRole('button', { name: 'Download' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(body).toEqual({ id: 'x1', savePath: '/tmp/xdcc-e2e' });
+  await expect(page.getByRole('button', { name: 'Add Frieren - 01 [1080p].mkv' })).toBeDisabled();
+
+  // The next XDCC download starts from the folder used last.
+  await page.reload();
+  await page.getByRole('button', { name: 'Add Frieren - 01 [1080p].mkv' }).click();
+  await expect(page.getByLabel('Save to')).toHaveValue('/tmp/xdcc-e2e');
+});

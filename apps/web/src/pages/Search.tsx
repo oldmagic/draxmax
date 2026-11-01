@@ -11,9 +11,16 @@ import {
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { Link, useLocation, useSearch } from 'wouter';
-import { CONTENT_TYPES, type ContentType, type SearchResultDTO } from '@draxmax/shared';
+import {
+  CONTENT_TYPES,
+  isAbsolutePath,
+  type ContentType,
+  type SearchResultDTO,
+} from '@draxmax/shared';
+import { PathInput } from '@/components/FolderPicker';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Tooltip } from '@/components/ui/tooltip';
 import { api } from '@/lib/api';
@@ -296,14 +303,106 @@ function Result({ result: r, category }: { result: SearchResultDTO; category: st
   );
 }
 
+const XDCC_FOLDER_KEY = 'draxmax-xdcc-folder';
+
+/** The folder the last XDCC download went to, in this browser. */
+function lastXdccFolder(): string {
+  try {
+    return localStorage.getItem(XDCC_FOLDER_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function rememberXdccFolder(path: string): void {
+  try {
+    localStorage.setItem(XDCC_FOLDER_KEY, path);
+  } catch {
+    // Not remembered; the default is offered next time.
+  }
+}
+
+/** Asks where an XDCC download goes before it starts. */
+function ChooseFolder({
+  result: r,
+  pending,
+  onClose,
+  onConfirm,
+}: {
+  result: SearchResultDTO;
+  pending: boolean;
+  onClose: () => void;
+  onConfirm: (path: string) => void;
+}) {
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings });
+  const s = settings?.settings;
+  const fallback = String(s?.xdccDownloadPath || s?.downloadPath || '');
+  const [path, setPath] = useState(lastXdccFolder);
+  const chosen = path.trim() || fallback;
+  const invalid = chosen !== '' && !isAbsolutePath(chosen);
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        title="Download with XDCC"
+        description={`From ${r.xdcc!.bot} on ${r.xdcc!.network}, pack #${r.xdcc!.pack}`}
+        className="w-[min(94vw,34rem)]"
+      >
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (chosen && !invalid) onConfirm(chosen);
+          }}
+        >
+          <div className="rounded-xl border bg-surface-2 px-3 py-2 text-sm">
+            <div className="break-all font-medium">{r.title}</div>
+            {r.size ? <div className="text-xs text-muted">{formatBytes(r.size)}</div> : null}
+          </div>
+          <div>
+            <label htmlFor="xdcc-save-path" className="mb-1.5 block text-sm font-medium">
+              Save to
+            </label>
+            <PathInput
+              id="xdcc-save-path"
+              value={path}
+              onChange={setPath}
+              placeholder={fallback}
+              inputClassName="h-9"
+            />
+            <span className={cn('mt-1 block text-xs', invalid ? 'text-danger' : 'text-muted')}>
+              {invalid
+                ? 'Use a full path, e.g. /media/1/Anime.'
+                : path.trim()
+                  ? 'The folder is created if it does not exist.'
+                  : `Leave empty to use ${fallback || 'the default folder'}.`}
+            </span>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" disabled={pending || !chosen || invalid}>
+              {pending ? <Loader2 className="animate-spin" /> : <Download />} Download
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /** A pack offered by an IRC bot: added to the XDCC list instead of the torrents. */
 function XdccResult({ result: r }: { result: SearchResultDTO }) {
   const [, navigate] = useLocation();
   const [added, setAdded] = useState(r.inList);
+  const [choosing, setChoosing] = useState(false);
   const x = r.xdcc!;
   const add = useMutation({
-    mutationFn: () => api.addXdcc({ id: r.id }),
-    onSuccess: (t) => {
+    mutationFn: (savePath: string) => api.addXdcc({ id: r.id, savePath }),
+    onSuccess: (t, savePath) => {
+      rememberXdccFolder(savePath);
+      setChoosing(false);
       setAdded(true);
       useXdcc.getState().upsert(t);
       toast.success('Added to XDCC', {
@@ -346,11 +445,19 @@ function XdccResult({ result: r }: { result: SearchResultDTO }) {
         variant={added ? 'ghost' : 'primary'}
         disabled={added || add.isPending}
         aria-label={`Add ${r.title}`}
-        onClick={() => add.mutate()}
+        onClick={() => setChoosing(true)}
       >
-        {add.isPending ? <Loader2 className="animate-spin" /> : added ? <Check /> : <Download />}
+        {added ? <Check /> : <Download />}
         {added ? 'Added' : 'Add'}
       </Button>
+      {choosing && (
+        <ChooseFolder
+          result={r}
+          pending={add.isPending}
+          onClose={() => setChoosing(false)}
+          onConfirm={(path) => add.mutate(path)}
+        />
+      )}
     </li>
   );
 }
