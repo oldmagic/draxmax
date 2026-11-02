@@ -22,3 +22,10 @@ overrides:
   # global-agent 3 pulls roarr → sprintf-js (unfixed DoS, GHSA-hp3w-g68c-fv3c). 4.x drops
   # both and keeps the bootstrap() API @electron/get calls (only when a proxy is configured).
   global-agent@3: ^4.1.3
+  # glob ≤14.0.1 keeps walking after an abort (GHSA-3g3m-2fjr-6pw4); @fastify/static still
+  # asks for ^13. glob 7 (electron-builder, build time only) predates the affected code.
+  glob@>=9.0.0 <14.0.2: ^14.0.3
+  # minimatch <11.0.1 can be made to do quadratic work on a crafted pattern (GHSA-g3hv-75wg-m249).
+  # 9.x and 10.x share 11's API. 3.x and 5.x (electron-builder, build time only) have no
+  # optimizationLevel code, so are not affected, and 11 would break their callers.
+  minimatch@>=9.0.0 <11.0.1: ^11.0.4
