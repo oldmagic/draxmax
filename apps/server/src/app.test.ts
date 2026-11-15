@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { connect, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -102,6 +103,41 @@ describe('REST API', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json<TorrentDTO>().files.map((f) => f.selected)).toEqual([true, false]);
+  });
+
+  it('downloads a .torrent from a link, follows a redirect to a magnet and rejects bad links', async () => {
+    const torrent = Buffer.from(makeTorrentFile('Linked', [{ path: ['a.bin'], length: 10 }]));
+    const web = createServer((req, res) => {
+      if (req.url === '/file.torrent') {
+        res.writeHead(200, { 'content-type': 'application/x-bittorrent' }).end(torrent);
+      } else if (req.url === '/magnet') {
+        res.writeHead(302, { location: MAGNET }).end();
+      } else if (req.url === '/page') {
+        res.writeHead(200, { 'content-type': 'text/html' }).end('<html>login</html>');
+      } else res.writeHead(404).end();
+    });
+    await new Promise<void>((r) => web.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${(web.address() as AddressInfo).port}`;
+    const add = (url: string) =>
+      app.inject({ method: 'POST', url: '/api/torrents/url', payload: { url, paused: true } });
+    try {
+      const file = await add(`${base}/file.torrent`);
+      expect(file.statusCode).toBe(201);
+      expect(file.json<TorrentDTO>()).toMatchObject({ name: 'Linked', status: 'paused' });
+
+      const magnet = await add(`${base}/magnet`);
+      expect(magnet.statusCode).toBe(201);
+      expect(magnet.json<TorrentDTO>().name).toBe('Cosmos');
+
+      expect((await add(`${base}/page`)).statusCode).toBe(400);
+      const missing = await add(`${base}/gone`);
+      expect(missing.statusCode).toBe(400);
+      expect(missing.json<{ error: string }>().error).toContain('HTTP 404');
+      expect((await add('ftp://example.org/x.torrent')).statusCode).toBe(400);
+      expect((await add(`${base}/file.torrent`)).statusCode).toBe(409);
+    } finally {
+      await new Promise((r) => web.close(r));
+    }
   });
 
   it('maps validation, not-found and conflict errors to status codes', async () => {

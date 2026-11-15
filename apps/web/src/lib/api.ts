@@ -28,6 +28,7 @@ import type {
   LibraryEntryDTO,
   AddMagnetRequest,
   AddTorrentFileRequest,
+  AddTorrentUrlRequest,
   CategoryDTO,
   PeerDTO,
   SettingsResponse,
@@ -125,6 +126,8 @@ export const api = {
   addMagnet: (req: AddMagnetRequest) => request<TorrentDTO>('POST', '/api/torrents/magnet', req),
   addTorrentFile: (req: AddTorrentFileRequest) =>
     request<TorrentDTO>('POST', '/api/torrents/file', req),
+  addTorrentUrl: (req: AddTorrentUrlRequest) =>
+    request<TorrentDTO>('POST', '/api/torrents/url', req),
   update: (id: string, patch: UpdateTorrentRequest) =>
     request<TorrentDTO>('PATCH', `/api/torrents/${id}`, patch),
   pauseAll: () => request<undefined>('POST', '/api/torrents/pause-all'),

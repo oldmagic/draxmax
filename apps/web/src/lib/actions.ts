@@ -45,6 +45,16 @@ export const actions = {
       },
     ),
 
+  /** Has the server download a `.torrent` from an http(s) link. */
+  addUrl: (url: string, extra: AddExtras = {}) =>
+    run(
+      () => api.addTorrentUrl({ url, ...extra }),
+      (t) => {
+        upsert(t);
+        toast.success('Torrent added', { description: t.name });
+      },
+    ),
+
   /** Adds each dropped/picked `.torrent`; non-torrent files are skipped with a warning. */
   async addFiles(files: File[], extra: AddExtras = {}): Promise<number> {
     let added = 0;

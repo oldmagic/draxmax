@@ -16,6 +16,8 @@ export type Wire<T> = T extends Date
 export type TorrentDTO = Wire<TorrentItem>;
 
 export const MAGNET_RE = /^magnet:\?/i;
+/** An http(s) link to a `.torrent` file (or to a page that redirects to a magnet link). */
+export const TORRENT_URL_RE = /^https?:\/\/[^\s/?#]+[^\s]*$/i;
 
 /** POSIX (`/mnt/nas`), Windows drive (`D:\`) or UNC (`\\server\share`) absolute path. */
 export function isAbsolutePath(p: string): boolean {
@@ -49,6 +51,13 @@ export const addTorrentFileSchema = z.object({
   ...addCommon,
 });
 export type AddTorrentFileRequest = z.infer<typeof addTorrentFileSchema>;
+
+/** The server downloads the `.torrent` itself: browsers can't fetch other sites' files. */
+export const addTorrentUrlSchema = z.object({
+  url: z.string().trim().max(8192).regex(TORRENT_URL_RE, 'Not an http(s) link'),
+  ...addCommon,
+});
+export type AddTorrentUrlRequest = z.infer<typeof addTorrentUrlSchema>;
 
 export const removeTorrentSchema = z.object({
   deleteFiles: z.boolean().default(false),

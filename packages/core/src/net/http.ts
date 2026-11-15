@@ -164,6 +164,13 @@ export class HttpError extends Error {
   }
 }
 
+/** A link redirected to a magnet URI, which only a torrent client (not HTTP) can follow. */
+export class MagnetRedirectError extends HttpError {
+  constructor(readonly magnetURI: string) {
+    super('The link redirected to a magnet link');
+  }
+}
+
 /** fetch() with a timeout, a size cap and our User-Agent. Only http(s) URLs are allowed. */
 export async function fetchBytes(
   url: string,
@@ -221,6 +228,8 @@ export async function fetchBytes(
     } catch {
       throw new HttpError(`Invalid redirect from ${target.host}`);
     }
+    // Indexers (Jackett, Prowlarr) answer magnet-only results with a redirect to the magnet.
+    if (parsed.protocol === 'magnet:') throw new MagnetRedirectError(parsed.href);
   }
   const ok = res.status >= 200 && res.status < 300;
   if (!ok && !opts.acceptErrors) {

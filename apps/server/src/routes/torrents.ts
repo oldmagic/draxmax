@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { Core } from '@draxmax/core';
+import { CoreError, fetchBytes, HttpError, MagnetRedirectError, type Core } from '@draxmax/core';
 import {
   addMagnetSchema,
   addTorrentFileSchema,
+  addTorrentUrlSchema,
   categorySchema,
   queueMoveSchema,
   removeTorrentSchema,
@@ -37,6 +38,26 @@ export async function torrentRoutes(app: FastifyInstance, { core }: { core: Core
       .send(
         await t.addTorrentFile(Buffer.from(body.data, 'base64'), { ...body, origin: 'manual' }),
       );
+  });
+
+  app.post('/api/torrents/url', async (req, reply) => {
+    const body = addTorrentUrlSchema.parse(req.body);
+    const opts = { ...body, origin: 'manual' as const };
+    let data: Uint8Array;
+    try {
+      // The signed-in user typed this link, so it may point at the LAN (e.g. Prowlarr), as the
+      // qBittorrent API's `urls` field can. fetchBytes still checks every redirect hop.
+      ({ body: data } = await fetchBytes(body.url, {
+        maxBytes: 16 * 1024 * 1024,
+        headers: { accept: 'application/x-bittorrent, */*' },
+      }));
+    } catch (err) {
+      if (err instanceof MagnetRedirectError)
+        return reply.status(201).send(t.addMagnet(err.magnetURI, opts));
+      if (err instanceof HttpError) throw new CoreError('invalid_input', err.message);
+      throw err;
+    }
+    return reply.status(201).send(await t.addTorrentFile(data, opts));
   });
 
   app.post('/api/torrents/pause-all', async (_req, reply) => {

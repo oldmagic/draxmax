@@ -39,7 +39,10 @@ test('add, pause, resume and remove a magnet; navigate every page', async ({ pag
   await page.getByRole('button', { name: 'Add your first torrent' }).click();
   const dialog = page.getByRole('dialog', { name: 'Add torrents' });
   await dialog.getByRole('textbox').first().fill('not a magnet');
-  await expect(dialog.getByText('One line is not a magnet link.')).toBeVisible();
+  await expect(dialog.getByText('One line is not a magnet or http(s) link.')).toBeVisible();
+  // http(s) links to .torrent files are accepted too (the server downloads them).
+  await dialog.getByRole('textbox').first().fill('https://example.org/linux.torrent');
+  await expect(dialog.getByRole('button', { name: 'Add torrent' })).toBeEnabled();
   await dialog.getByRole('textbox').first().fill(MAGNET);
   await dialog.getByRole('button', { name: 'Options' }).click();
   await dialog.getByRole('combobox', { name: 'Category' }).fill('E2E');

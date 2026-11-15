@@ -1,6 +1,6 @@
 export { createCore, type Core, type CoreOptions, type CategoryService } from './core.ts';
 export { CoreError } from './errors.ts';
-export { fetchBytes } from './net/http.ts';
+export { fetchBytes, HttpError, MagnetRedirectError } from './net/http.ts';
 export type { BackupBundle } from './backup.ts';
 export { CoreEvents, type CoreEventMap } from './events.ts';
 export { TorrentManager } from './torrent/manager.ts';

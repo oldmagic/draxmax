@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, FileUp, FolderDown, Link2, Loader2 } from 'lucide-react';
 import { useRef, useState, type DragEvent } from 'react';
-import { isAbsolutePath, MAGNET_RE } from '@draxmax/shared';
+import { isAbsolutePath, MAGNET_RE, TORRENT_URL_RE } from '@draxmax/shared';
 import { PathInput, useSavePlaces } from '@/components/FolderPicker';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
@@ -13,12 +13,15 @@ import { desktop } from '@/lib/desktop';
 import { cn } from '@/lib/utils';
 import { useUi } from '@/stores/ui';
 
-/** Accepts one or more magnet links (one per line) or .torrent files. */
+/** Accepts magnet links or http(s) .torrent links (one per line), or .torrent files. */
 export function AddTorrentDialog() {
   const { addOpen, addPrefill, closeAdd } = useUi();
   return (
     <Dialog open={addOpen} onOpenChange={(o) => !o && closeAdd()}>
-      <DialogContent title="Add torrents" description="Paste magnet links or drop .torrent files.">
+      <DialogContent
+        title="Add torrents"
+        description="Paste magnet or torrent links, or drop .torrent files."
+      >
         {/* Content unmounts when closed, so the form starts fresh from the prefill each time. */}
         <AddTorrentForm initialText={addPrefill} onDone={closeAdd} />
       </DialogContent>
@@ -55,19 +58,26 @@ function AddTorrentForm({ initialText, onDone }: { initialText: string; onDone()
     sequential,
   };
 
-  const magnets = text
+  const links = text
     .split(/\r?\n/)
     .map((s) => s.trim())
     .filter(Boolean);
-  const invalid = magnets.filter((m) => !MAGNET_RE.test(m));
+  const invalid = links.filter((l) => !MAGNET_RE.test(l) && !TORRENT_URL_RE.test(l));
 
-  async function submitMagnets() {
-    if (magnets.length === 0 || invalid.length > 0 || pathInvalid) return;
+  async function submitLinks() {
+    if (links.length === 0 || invalid.length > 0 || pathInvalid) return;
     setBusy(true);
-    let ok = 0;
-    for (const m of magnets) if (await actions.addMagnet(m, extra)) ok++;
+    const failed: string[] = [];
+    for (const l of links) {
+      const added = MAGNET_RE.test(l)
+        ? await actions.addMagnet(l, extra)
+        : await actions.addUrl(l, extra);
+      if (!added) failed.push(l);
+    }
     setBusy(false);
-    if (ok === magnets.length) closeAdd();
+    // Keep only the links that failed, so they can be fixed and retried.
+    if (failed.length === 0) closeAdd();
+    else setText(failed.join('\n'));
   }
 
   async function addFiles(files: File[]) {
@@ -103,23 +113,23 @@ function AddTorrentForm({ initialText, onDone }: { initialText: string; onDone()
     <div className="space-y-4">
       <label className="block">
         <span className="mb-1.5 flex items-center gap-1.5 text-sm font-medium">
-          <Link2 className="size-4 text-muted" /> Magnet links
+          <Link2 className="size-4 text-muted" /> Magnet or torrent links
         </span>
         <Textarea
           autoFocus
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submitMagnets();
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submitLinks();
           }}
-          placeholder="magnet:?xt=urn:btih:…  (one per line)"
+          placeholder={'magnet:?xt=urn:btih:…\nhttps://example.org/file.torrent  (one per line)'}
           className="font-mono text-xs"
           aria-invalid={invalid.length > 0}
         />
         {invalid.length > 0 && (
           <span className="mt-1 block text-xs text-danger">
-            {invalid.length === 1 ? 'One line is' : `${invalid.length} lines are`} not a magnet
-            link.
+            {invalid.length === 1 ? 'One line is' : `${invalid.length} lines are`} not a magnet or
+            http(s) link.
           </span>
         )}
       </label>
@@ -240,11 +250,11 @@ function AddTorrentForm({ initialText, onDone }: { initialText: string; onDone()
         </Button>
         <Button
           variant="primary"
-          onClick={() => void submitMagnets()}
-          disabled={busy || magnets.length === 0 || invalid.length > 0 || pathInvalid}
+          onClick={() => void submitLinks()}
+          disabled={busy || links.length === 0 || invalid.length > 0 || pathInvalid}
         >
           {busy && <Loader2 className="animate-spin" />}
-          Add {magnets.length > 1 ? `${magnets.length} torrents` : 'torrent'}
+          Add {links.length > 1 ? `${links.length} torrents` : 'torrent'}
         </Button>
       </div>
     </div>
