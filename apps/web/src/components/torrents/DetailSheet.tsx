@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Gauge,
   Plus,
   Trash2,
   X,
@@ -86,6 +87,9 @@ function Stat({ label, children }: { label: string; children: ReactNode }) {
     </div>
   );
 }
+
+/** A per-torrent limit in bytes/s (-1 = none) as shown in the panel. */
+const formatLimit = (bytes: number) => (bytes > 0 ? formatSpeed(bytes) : 'Unlimited');
 
 function General({ t }: { t: TorrentDTO }) {
   const meta = STATUS_META[t.status];
@@ -198,6 +202,17 @@ function General({ t }: { t: TorrentDTO }) {
           <div className="text-sm font-medium">Category</div>
           <Button size="sm" onClick={() => useDownloadsUi.getState().askCategory([t.id])}>
             {t.category ?? 'None'}
+          </Button>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-sm font-medium">Speed limits</div>
+          <Button
+            size="sm"
+            aria-label={`Speed limits: download ${formatLimit(t.downloadLimit)}, upload ${formatLimit(t.uploadLimit)}`}
+            onClick={() => useDownloadsUi.getState().askLimits([t.id])}
+            className="tabular"
+          >
+            <Gauge />↓ {formatLimit(t.downloadLimit)} · ↑ {formatLimit(t.uploadLimit)}
           </Button>
         </div>
         <div>

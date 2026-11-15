@@ -89,14 +89,24 @@ test('add, pause, resume and remove a magnet; navigate every page', async ({ pag
   await limits.getByRole('button', { name: 'Apply' }).click();
   await expect(limits).toBeHidden();
 
+  // The details panel shows them after a reload and opens the same dialog.
   await page.reload();
   await expect(row).toBeVisible();
-  await row.click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Speed limits…' }).click();
+  await row.dblclick();
+  const limitsButton = sheet.getByRole('button', { name: /^Speed limits:/ });
+  await expect(limitsButton).toHaveAccessibleName(
+    'Speed limits: download 500 KB/s, upload 100 KB/s',
+  );
+  await limitsButton.click();
   await expect(limits.getByRole('spinbutton', { name: 'Download limit' })).toHaveValue('500');
   await expect(limits.getByRole('spinbutton', { name: 'Upload limit' })).toHaveValue('100');
   await limits.getByRole('button', { name: 'Remove limits' }).click();
   await expect(limits).toBeHidden();
+  await expect(limitsButton).toHaveAccessibleName(
+    'Speed limits: download Unlimited, upload Unlimited',
+  );
+  await page.keyboard.press('Escape');
+  await expect(sheet).toBeHidden();
 
   for (const name of ['Upcoming', 'RSS', 'Stats', 'Settings', 'Downloads']) {
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name }).click();
