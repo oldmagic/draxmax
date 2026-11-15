@@ -78,8 +78,25 @@ test('add, pause, resume and remove a magnet; navigate every page', async ({ pag
   await expect(sheet.getByText('udp://tracker.example.org:1337/announce')).toBeVisible();
   await page.keyboard.press('Escape');
 
+  // Per-torrent speed limits from the right-click menu; they survive a reload.
+  await row.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Speed limits…' }).click();
+  const limits = page.getByRole('dialog', { name: 'Speed limits' });
+  await limits.getByRole('spinbutton', { name: 'Download limit' }).fill('-5');
+  await expect(limits.getByRole('button', { name: 'Apply' })).toBeDisabled();
+  await limits.getByRole('spinbutton', { name: 'Download limit' }).fill('500');
+  await limits.getByRole('spinbutton', { name: 'Upload limit' }).fill('100');
+  await limits.getByRole('button', { name: 'Apply' }).click();
+  await expect(limits).toBeHidden();
+
   await page.reload();
   await expect(row).toBeVisible();
+  await row.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Speed limits…' }).click();
+  await expect(limits.getByRole('spinbutton', { name: 'Download limit' })).toHaveValue('500');
+  await expect(limits.getByRole('spinbutton', { name: 'Upload limit' })).toHaveValue('100');
+  await limits.getByRole('button', { name: 'Remove limits' }).click();
+  await expect(limits).toBeHidden();
 
   for (const name of ['Upcoming', 'RSS', 'Stats', 'Settings', 'Downloads']) {
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name }).click();

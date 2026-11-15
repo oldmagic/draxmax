@@ -31,6 +31,9 @@ export interface EngineAddOptions {
   bitfield?: Uint8Array | undefined;
   announce: string[];
   sequential: boolean;
+  /** Per-torrent rate limits in bytes/s (-1 = unlimited). */
+  downloadLimit: number;
+  uploadLimit: number;
 }
 
 export interface EngineFileStats {
@@ -101,6 +104,8 @@ export interface EngineTorrent {
   /** Sets per-file priority; 0 deselects the file. Requires metadata. */
   setFilePriorities(priorities: FilePriority[]): void;
   setSequential(sequential: boolean): void;
+  /** Applies this torrent's rate limits in bytes/s (-1 = unlimited), on top of the global ones. */
+  setRateLimits(download: number, upload: number): void;
   /** Announces to all trackers and the DHT now. */
   reannounce(): void;
   on<E extends keyof EngineTorrentEvents>(

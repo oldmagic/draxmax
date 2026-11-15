@@ -114,6 +114,9 @@ export const updateTorrentSchema = z.object({
   category: z.string().trim().max(100).nullable().optional(),
   tags: z.array(z.string().trim().min(1).max(64)).max(50).optional(),
   sequential: z.boolean().optional(),
+  /** Bytes/s; -1 (or 0) = unlimited. */
+  downloadLimit: z.number().int().min(-1).max(Number.MAX_SAFE_INTEGER).optional(),
+  uploadLimit: z.number().int().min(-1).max(Number.MAX_SAFE_INTEGER).optional(),
 });
 export type UpdateTorrentRequest = z.infer<typeof updateTorrentSchema>;
 

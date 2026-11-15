@@ -33,6 +33,9 @@ export interface TorrentItem {
   /** Seconds spent seeding (finished and running), across sessions. */
   seedingTime: number;
   sequentialDownload: boolean;
+  /** Per-torrent rate limits in bytes/s (-1 = unlimited), on top of the global ones. */
+  downloadLimit: number;
+  uploadLimit: number;
   priority: number;
   error?: string;
   /** Private torrent (BEP 27): no DHT/PEX, and public trackers are never added. */

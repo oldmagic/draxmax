@@ -6,6 +6,7 @@ import {
   Copy,
   FolderInput,
   FolderOpen,
+  Gauge,
   Info,
   Megaphone,
   Pause,
@@ -68,6 +69,12 @@ export function torrentActions(targets: TorrentDTO[]): MenuAction[] {
       label: 'Move to another folder…',
       icon: <FolderInput />,
       onSelect: () => ui.askMove(ids),
+    },
+    {
+      key: 'limits',
+      label: 'Speed limits…',
+      icon: <Gauge />,
+      onSelect: () => ui.askLimits(ids),
     },
     {
       key: 'reannounce',

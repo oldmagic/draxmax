@@ -9,7 +9,11 @@ export function ContextMenu({ actions, children }: { actions: MenuAction[]; chil
     <CM.Root>
       <CM.Trigger asChild>{children}</CM.Trigger>
       <CM.Portal>
-        <CM.Content className="glass z-50 min-w-52 rounded-xl !bg-bg/90 p-1 data-[state=open]:animate-[fade-in_120ms_ease-out]">
+        <CM.Content
+          collisionPadding={8}
+          // Long menus scroll instead of running off short screens.
+          className="glass z-50 max-h-[var(--radix-context-menu-content-available-height)] min-w-52 overflow-y-auto rounded-xl !bg-bg/90 p-1 data-[state=open]:animate-[fade-in_120ms_ease-out]"
+        >
           {actions.map((a) => (
             <div key={a.key}>
               {a.separatorBefore && <CM.Separator className="my-1 h-px bg-border" />}

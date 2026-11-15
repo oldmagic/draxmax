@@ -222,4 +222,8 @@ export const migrations: string[] = [
     completed_at  TEXT
   );
   `,
+  `
+  ALTER TABLE torrents ADD COLUMN download_limit INTEGER NOT NULL DEFAULT -1;
+  ALTER TABLE torrents ADD COLUMN upload_limit INTEGER NOT NULL DEFAULT -1;
+  `,
 ];

@@ -41,6 +41,9 @@ export interface TorrentRecord {
   private: boolean;
   /** Resumed by the user after a seeding limit stopped it: limits no longer apply. */
   seedExempt: boolean;
+  /** Per-torrent rate limits in bytes/s (-1 = unlimited), on top of the global ones. */
+  downloadLimit: number;
+  uploadLimit: number;
 }
 
 interface Row {
@@ -69,6 +72,8 @@ interface Row {
   complete_path: string | null;
   is_private: number;
   seed_exempt: number;
+  download_limit: number;
+  upload_limit: number;
 }
 
 function fromRow(r: Row): TorrentRecord {
@@ -98,6 +103,8 @@ function fromRow(r: Row): TorrentRecord {
     completePath: r.complete_path,
     private: r.is_private === 1,
     seedExempt: r.seed_exempt === 1,
+    downloadLimit: r.download_limit,
+    uploadLimit: r.upload_limit,
   };
 }
 
@@ -128,6 +135,8 @@ function toParams(t: TorrentRecord) {
     complete_path: t.completePath,
     is_private: t.private ? 1 : 0,
     seed_exempt: t.seedExempt ? 1 : 0,
+    download_limit: t.downloadLimit,
+    upload_limit: t.uploadLimit,
   };
 }
 
@@ -157,6 +166,8 @@ const COLUMNS = [
   'complete_path',
   'is_private',
   'seed_exempt',
+  'download_limit',
+  'upload_limit',
 ] as const;
 
 /** CRUD for the `torrents` table. */

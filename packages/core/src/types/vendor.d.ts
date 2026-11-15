@@ -125,6 +125,9 @@ declare module 'webtorrent' {
     bitfield?: { buffer: Uint8Array };
     wires: Wire[];
     strategy: 'sequential' | 'rarest';
+    /** Per-torrent limits (bytes/s, <= 0 = unlimited); added by patches/webtorrent. */
+    throttleDownload(rate: number): void;
+    throttleUpload(rate: number): void;
     pause(): void;
     resume(): void;
     destroy(opts?: { destroyStore?: boolean }, cb?: (err?: Error | null) => void): void;

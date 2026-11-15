@@ -63,6 +63,9 @@ export interface TorrentPatch {
   category?: string | null | undefined;
   tags?: string[] | undefined;
   sequential?: boolean | undefined;
+  /** Bytes/s; -1 = unlimited. */
+  downloadLimit?: number | undefined;
+  uploadLimit?: number | undefined;
 }
 
 export type QueueMove = 'top' | 'up' | 'down' | 'bottom';
@@ -289,7 +292,7 @@ export class TorrentManager {
     return this.toItem(entry);
   }
 
-  /** Updates category, tags and/or sequential mode. */
+  /** Updates category, tags, sequential mode and/or rate limits. */
   update(id: string, patch: TorrentPatch): TorrentItem {
     const entry = this.entry(id);
     const r = entry.record;
@@ -298,6 +301,11 @@ export class TorrentManager {
     if (patch.sequential !== undefined) {
       r.sequential = patch.sequential;
       entry.handle?.setSequential(patch.sequential);
+    }
+    if (patch.downloadLimit !== undefined || patch.uploadLimit !== undefined) {
+      if (patch.downloadLimit !== undefined) r.downloadLimit = normalizeLimit(patch.downloadLimit);
+      if (patch.uploadLimit !== undefined) r.uploadLimit = normalizeLimit(patch.uploadLimit);
+      entry.handle?.setRateLimits(r.downloadLimit, r.uploadLimit);
     }
     this.deps.repo.save(r);
     return this.toItem(entry);
@@ -495,6 +503,8 @@ export class TorrentManager {
       completePath: staged ? finalPath : null,
       private: false,
       seedExempt: false,
+      downloadLimit: -1,
+      uploadLimit: -1,
       paused: opts.paused ?? false,
       addedAt: new Date().toISOString(),
       completedAt: null,
@@ -583,6 +593,8 @@ export class TorrentManager {
         bitfield: record.bitfield ?? undefined,
         announce: record.trackers.filter((t) => t.enabled).map((t) => t.url),
         sequential: record.sequential,
+        downloadLimit: record.downloadLimit,
+        uploadLimit: record.uploadLimit,
       });
       entry.handle = handle;
       handle.on('metadata', () => this.onMetadata(entry, handle));
@@ -930,6 +942,8 @@ export class TorrentManager {
       tags: record.tags,
       addedAt: new Date(record.addedAt),
       sequentialDownload: record.sequential,
+      downloadLimit: record.downloadLimit,
+      uploadLimit: record.uploadLimit,
       priority: record.priority,
       seedingTime: Math.floor(record.seedingSeconds),
     };
@@ -958,4 +972,9 @@ export class TorrentManager {
 
 function normalizeTags(tags: string[]): string[] {
   return [...new Set(tags.map((t) => t.trim()).filter((t) => t.length > 0 && t.length <= 64))];
+}
+
+/** A rate limit in bytes/s, or -1 for none (0 would stall the torrent; use pause instead). */
+function normalizeLimit(limit: number): number {
+  return limit > 0 ? Math.floor(limit) : -1;
 }

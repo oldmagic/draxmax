@@ -18,6 +18,7 @@ export class FakeTorrent implements EngineTorrent {
   readonly emitter = new EventEmitter();
   destroyed = false;
   sequential: boolean;
+  limits: { download: number; upload: number };
   reannounced = 0;
   priorities: FilePriority[] = [];
   trackerStats: EngineTrackerStats[];
@@ -43,6 +44,7 @@ export class FakeTorrent implements EngineTorrent {
     readonly opts: EngineAddOptions,
   ) {
     this.sequential = opts.sequential;
+    this.limits = { download: opts.downloadLimit, upload: opts.uploadLimit };
     this.trackerStats = opts.announce.map((url) => ({ url, status: 'updating' }));
   }
 
@@ -118,6 +120,10 @@ export class FakeTorrent implements EngineTorrent {
 
   setSequential(sequential: boolean): void {
     this.sequential = sequential;
+  }
+
+  setRateLimits(download: number, upload: number): void {
+    this.limits = { download, upload };
   }
 
   reannounce(): void {

@@ -17,7 +17,9 @@ export function DropdownMenuContent({
       <Menu.Content
         align={align}
         sideOffset={6}
-        className="glass z-50 min-w-48 rounded-xl !bg-bg/90 p-1 data-[state=open]:animate-[fade-in_120ms_ease-out]"
+        collisionPadding={8}
+        // Long menus scroll instead of running off short screens.
+        className="glass z-50 max-h-[var(--radix-dropdown-menu-content-available-height)] min-w-48 overflow-y-auto rounded-xl !bg-bg/90 p-1 data-[state=open]:animate-[fade-in_120ms_ease-out]"
       >
         {children}
       </Menu.Content>

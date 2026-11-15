@@ -109,6 +109,8 @@ export class WebTorrentEngine implements TorrentEngine {
       // pieces that is 320 MiB per torrent; the OS page cache does this job for free.
       storeCacheSlots: 0,
     });
+    torrent.throttleDownload(opts.downloadLimit);
+    torrent.throttleUpload(opts.uploadLimit);
     return new WebTorrentHandle(torrent, opts.announce);
   }
 
@@ -264,6 +266,11 @@ class WebTorrentHandle implements EngineTorrent {
   setSequential(sequential: boolean): void {
     // WebTorrent reads `strategy` on every piece pick, so this applies immediately.
     this.torrent.strategy = sequential ? 'sequential' : 'rarest';
+  }
+
+  setRateLimits(download: number, upload: number): void {
+    this.torrent.throttleDownload(download);
+    this.torrent.throttleUpload(upload);
   }
 
   reannounce(): void {

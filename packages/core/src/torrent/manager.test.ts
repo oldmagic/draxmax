@@ -196,6 +196,29 @@ describe('TorrentManager: transfer state', () => {
     expect(core.torrents.resume(id).error).toBeUndefined();
   });
 
+  it('sets per-torrent speed limits live and keeps them across restarts', async () => {
+    const { id } = core.torrents.addMagnet(MAGNET);
+    await settle();
+    expect(engine.last.limits).toEqual({ download: -1, upload: -1 });
+    expect(core.torrents.get(id)).toMatchObject({ downloadLimit: -1, uploadLimit: -1 });
+
+    const item = core.torrents.update(id, { downloadLimit: 512 * 1024, uploadLimit: 0 });
+    // 0 would stall the torrent, so it means "no limit" like -1.
+    expect(item).toMatchObject({ downloadLimit: 512 * 1024, uploadLimit: -1 });
+    expect(engine.last.limits).toEqual({ download: 512 * 1024, upload: -1 });
+    core.torrents.update(id, { uploadLimit: 100 * 1024 });
+    expect(engine.last.limits).toEqual({ download: 512 * 1024, upload: 100 * 1024 });
+
+    await core.shutdown();
+    boot();
+    await settle();
+    expect(core.torrents.get(id)).toMatchObject({
+      downloadLimit: 512 * 1024,
+      uploadLimit: 100 * 1024,
+    });
+    expect(engine.last.opts).toMatchObject({ downloadLimit: 512 * 1024, uploadLimit: 100 * 1024 });
+  });
+
   it('toggles sequential mode live and updates tags/category', async () => {
     const { id } = core.torrents.addMagnet(MAGNET);
     await settle();

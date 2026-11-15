@@ -11,11 +11,110 @@ index 5f04bcae865dc16f91c5f1df79048afd3478bff3..e60c638ea435bf4c28e9fa20408c0226
  
      // If the connection has already been closed before the `connect` event is fired,
      // then `remoteAddress` will not be available, and we can't use this connection.
+diff --git a/lib/peer.js b/lib/peer.js
+index 212f038d9ef74198ff063841351e6d141423ffe6..8823c40f39008f84ba9f8ab87ff2909f6175b578 100644
+--- a/lib/peer.js
++++ b/lib/peer.js
+@@ -137,6 +137,7 @@ export default class Peer extends EventEmitter {
+     pipeline(
+       this.conn,
+       this.throttleGroups.down.throttle(),
++      swarmThrottle(this, 'down'),
+       new Transform({
+         transform (chunk, callback) {
+           self.emit('download', chunk.length)
+@@ -146,6 +147,7 @@ export default class Peer extends EventEmitter {
+       }),
+       this.wire,
+       this.throttleGroups.up.throttle(),
++      swarmThrottle(this, 'up'),
+       new Transform({
+         transform (chunk, callback) {
+           self.emit('upload', chunk.length)
+@@ -277,6 +279,40 @@ Peer.SOURCE_UT_PEX = SOURCE_UT_PEX
+  * "introduction" (i.e. WebRTC signaling), and there's no equivalent to an IP address
+  * that lets you refer to a WebRTC endpoint.
+  */
++/**
++ * Per-torrent rate limit, on top of the client-wide one. Incoming peers only learn their
++ * torrent at handshake, so the torrent's group is looked up for every chunk; with no limit
++ * set the chunk passes straight through.
++ */
++function swarmThrottle (peer, dir) {
++  return new Transform({
++    transform (chunk, cb) {
++      const group = peer.swarm?.throttleGroups?.[dir]
++      if (!group || !group.getEnabled()) return cb(null, chunk)
++      throttleChunk(this, peer, group, chunk).then(() => cb(), cb)
++    }
++  })
++}
++
++async function throttleChunk (stream, peer, group, chunk) {
++  let pos = 0
++  while (pos < chunk.length) {
++    if (peer.destroyed) return
++    if (!group.getEnabled()) {
++      stream.push(chunk.subarray(pos))
++      return
++    }
++    const size = Math.min(group.getChunksize(), chunk.length - pos)
++    if (!group.bucket.tryRemoveTokens(size)) {
++      // An error only means the limit changed meanwhile; carry on at the new rate.
++      await new Promise(resolve => group.bucket.removeTokens(size, () => resolve()))
++    }
++    if (peer.destroyed) return
++    stream.push(chunk.subarray(pos, pos + size))
++    pos += size
++  }
++}
++
+ Peer.createWebRTCPeer = (conn, swarm, throttleGroups, source = null) => {
+   const peer = new Peer(conn.id, 'webrtc', 0)
+   peer.conn = conn
 diff --git a/lib/torrent.js b/lib/torrent.js
-index 771a87fa5004f5ff82e9b5c3d9d8b0d70e110dbf..e0ab3f3cf1cea3e5442c8530409623b809c1660f 100644
+index 771a87fa5004f5ff82e9b5c3d9d8b0d70e110dbf..7addd54df9911e19176f2b1c21376b45d94a1620 100644
 --- a/lib/torrent.js
 +++ b/lib/torrent.js
-@@ -1652,8 +1652,35 @@ export default class Torrent extends EventEmitter {
+@@ -34,6 +34,7 @@ import RarityMap from './rarity-map.js'
+ import utp from './utp.cjs' // browser exclude
+ import WebConn from './webconn.js'
+ import { Selections } from './selections.js'
++import { ThrottleGroup } from 'speed-limiter'
+ 
+ // The following JSDoc comments are global types that can be used across the project
+ 
+@@ -142,6 +143,12 @@ export default class Torrent extends EventEmitter {
+ 
+     this.strategy = opts.strategy || 'sequential'
+ 
++    // Per-torrent rate limits (bytes/s), applied on top of the client's; off by default.
++    this.throttleGroups = {
++      down: new ThrottleGroup({ rate: 0, enabled: false }),
++      up: new ThrottleGroup({ rate: 0, enabled: false })
++    }
++
+     this.maxWebConns = opts.maxWebConns || 4
+ 
+     this._rechokeNumSlots = (opts.uploads === false || opts.uploads === 0)
+@@ -944,6 +951,16 @@ export default class Torrent extends EventEmitter {
+     })
+   }
+ 
++  /** Limits this torrent's download rate in bytes/s; -1 (or any value <= 0) removes it. */
++  throttleDownload (rate) {
++    setThrottle(this.throttleGroups.down, rate)
++  }
++
++  /** Limits this torrent's upload rate in bytes/s; -1 (or any value <= 0) removes it. */
++  throttleUpload (rate) {
++    setThrottle(this.throttleGroups.up, rate)
++  }
++
+   destroy (opts, cb) {
+     if (typeof opts === 'function') return this.destroy(null, opts)
+ 
+@@ -1652,8 +1669,35 @@ export default class Torrent extends EventEmitter {
        return false
      }
  
@@ -53,7 +152,7 @@ index 771a87fa5004f5ff82e9b5c3d9d8b0d70e110dbf..e0ab3f3cf1cea3e5442c8530409623b8
      }
  
      // TODO: Do we need both validateWire and trySelectWire?
-@@ -1670,7 +1697,7 @@ export default class Torrent extends EventEmitter {
+@@ -1670,7 +1714,7 @@ export default class Torrent extends EventEmitter {
            const len = end - start + 1
            const tried = {}
            let tries = 0
@@ -62,7 +161,7 @@ index 771a87fa5004f5ff82e9b5c3d9d8b0d70e110dbf..e0ab3f3cf1cea3e5442c8530409623b8
  
            while (tries < len) {
              piece = self._rarityMap.getRarestPiece(filter)
-@@ -1743,7 +1770,12 @@ export default class Torrent extends EventEmitter {
+@@ -1743,7 +1787,12 @@ export default class Torrent extends EventEmitter {
            const len = end - start + 1
            const tried = {}
            let tries = 0
@@ -76,7 +175,7 @@ index 771a87fa5004f5ff82e9b5c3d9d8b0d70e110dbf..e0ab3f3cf1cea3e5442c8530409623b8
  
            while (tries < len) {
              piece = self._rarityMap.getRarestPiece(filter)
-@@ -2126,6 +2158,9 @@ export default class Torrent extends EventEmitter {
+@@ -2126,6 +2175,9 @@ export default class Torrent extends EventEmitter {
      }
  
      const conn = peer.conn
@@ -86,3 +185,14 @@ index 771a87fa5004f5ff82e9b5c3d9d8b0d70e110dbf..e0ab3f3cf1cea3e5442c8530409623b8
  
      this._numPending += 1
      const donePending = once(() => { this._numPending -= 1 })
+@@ -2230,3 +2282,10 @@ function randomInt (high) {
+ }
+ 
+ function noop () {}
++
++function setThrottle (group, rate) {
++  rate = Math.floor(Number(rate))
++  if (!(rate > 0)) return group.setEnabled(false)
++  group.setRate(rate)
++  group.setEnabled(true)
++}
