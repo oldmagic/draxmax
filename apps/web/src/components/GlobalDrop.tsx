@@ -2,12 +2,11 @@ import { FileUp } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useState } from 'react';
 import { MAGNET_RE } from '@draxmax/shared';
-import { actions } from '@/lib/actions';
 import { useUi } from '@/stores/ui';
 
 /**
- * App-wide shortcuts: drop .torrent files anywhere to add them; paste a magnet link
- * anywhere (outside text fields) to open the add dialog prefilled.
+ * App-wide shortcuts: drop .torrent files anywhere, or paste a magnet link anywhere (outside
+ * text fields), to open the add dialog prefilled. Nothing is added until the user confirms.
  */
 export function GlobalDrop() {
   const [dragDepth, setDragDepth] = useState(0);
@@ -22,7 +21,11 @@ export function GlobalDrop() {
       if (!hasFiles(e)) return;
       e.preventDefault();
       setDragDepth(0);
-      void actions.addFiles([...(e.dataTransfer?.files ?? [])]);
+      const files = [...(e.dataTransfer?.files ?? [])];
+      if (files.length === 0) return;
+      const ui = useUi.getState();
+      ui.stageFiles(files);
+      if (!ui.addOpen && useUi.getState().addFiles.length > 0) ui.openAdd();
     };
     const paste = (e: ClipboardEvent) => {
       const target = e.target as HTMLElement | null;

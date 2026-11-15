@@ -1,6 +1,6 @@
 import { toast } from 'sonner';
 import type { AddMagnetRequest, TorrentDTO, UpdateTorrentRequest } from '@draxmax/shared';
-import { api, fileToBase64 } from '@/lib/api';
+import { api } from '@/lib/api';
 import { queryClient } from '@/lib/query';
 import { useTorrents } from '@/stores/torrents';
 
@@ -55,36 +55,15 @@ export const actions = {
       },
     ),
 
-  /** Adds each dropped/picked `.torrent`; non-torrent files are skipped with a warning. */
-  async addFiles(files: File[], extra: AddExtras = {}): Promise<number> {
-    let added = 0;
-    for (const file of files) {
-      if (!file.name.toLowerCase().endsWith('.torrent')) {
-        toast.warning(`Skipped ${file.name}`, { description: 'Only .torrent files can be added.' });
-        continue;
-      }
-      const data = await fileToBase64(file);
-      const t = await run(() => api.addTorrentFile({ fileName: file.name, data, ...extra }));
-      if (t) {
+  /** Adds a `.torrent` file's contents (base64). */
+  addTorrentFile: (fileName: string, data: string, extra: AddExtras = {}) =>
+    run(
+      () => api.addTorrentFile({ fileName, data, ...extra }),
+      (t) => {
         upsert(t);
-        added++;
         toast.success('Torrent added', { description: t.name });
-      }
-    }
-    return added;
-  },
-
-  async addBase64(files: { name: string; data: string }[], extra: AddExtras = {}): Promise<void> {
-    for (const f of files) {
-      await run(
-        () => api.addTorrentFile({ fileName: f.name, data: f.data, ...extra }),
-        (t) => {
-          upsert(t);
-          toast.success('Torrent added', { description: t.name });
-        },
-      );
-    }
-  },
+      },
+    ),
 
   pause: (ids: string[]) => bulk(ids, (id) => api.pause(id), 'Pause'),
   resume: (ids: string[]) => bulk(ids, (id) => api.resume(id), 'Resume'),

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { ChevronDown, FileUp, FolderDown, Link2, Loader2 } from 'lucide-react';
+import { ChevronDown, FileText, FileUp, FolderDown, Link2, Loader2, X } from 'lucide-react';
 import { useRef, useState, type DragEvent } from 'react';
 import { isAbsolutePath, MAGNET_RE, TORRENT_URL_RE } from '@draxmax/shared';
 import { PathInput, useSavePlaces } from '@/components/FolderPicker';
@@ -8,12 +8,16 @@ import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Input, Textarea } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { actions } from '@/lib/actions';
-import { api } from '@/lib/api';
+import { api, fileToBase64 } from '@/lib/api';
 import { desktop } from '@/lib/desktop';
+import { formatBytes } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { useUi } from '@/stores/ui';
 
-/** Accepts magnet links or http(s) .torrent links (one per line), or .torrent files. */
+/**
+ * Accepts magnet links or http(s) .torrent links (one per line), and .torrent files. Picked or
+ * dropped files are only listed; everything is added when the user clicks Add.
+ */
 export function AddTorrentDialog() {
   const { addOpen, addPrefill, closeAdd } = useUi();
   return (
@@ -35,6 +39,7 @@ function AddTorrentForm({ initialText, onDone }: { initialText: string; onDone()
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const { addFiles: files, stageFiles, unstageFile, setStagedFiles } = useUi();
   const [showOptions, setShowOptions] = useState(false);
   const [category, setCategory] = useState('');
   const [tags, setTags] = useState('');
@@ -64,39 +69,39 @@ function AddTorrentForm({ initialText, onDone }: { initialText: string; onDone()
     .filter(Boolean);
   const invalid = links.filter((l) => !MAGNET_RE.test(l) && !TORRENT_URL_RE.test(l));
 
-  async function submitLinks() {
-    if (links.length === 0 || invalid.length > 0 || pathInvalid) return;
+  const total = links.length + files.length;
+  const canSubmit = !busy && total > 0 && invalid.length === 0 && !pathInvalid;
+
+  async function submit() {
+    if (!canSubmit) return;
     setBusy(true);
-    const failed: string[] = [];
+    const failedLinks: string[] = [];
     for (const l of links) {
       const added = MAGNET_RE.test(l)
         ? await actions.addMagnet(l, extra)
         : await actions.addUrl(l, extra);
-      if (!added) failed.push(l);
+      if (!added) failedLinks.push(l);
+    }
+    const failedFiles: File[] = [];
+    for (const f of files) {
+      if (!(await actions.addTorrentFile(f.name, await fileToBase64(f), extra)))
+        failedFiles.push(f);
     }
     setBusy(false);
-    // Keep only the links that failed, so they can be fixed and retried.
-    if (failed.length === 0) closeAdd();
-    else setText(failed.join('\n'));
-  }
-
-  async function addFiles(files: File[]) {
-    if (pathInvalid) return;
-    setBusy(true);
-    const added = await actions.addFiles(files, extra);
-    setBusy(false);
-    if (added > 0) closeAdd();
+    // Keep only what failed, so it can be fixed and retried.
+    if (failedLinks.length === 0 && failedFiles.length === 0) return closeAdd();
+    setText(failedLinks.join('\n'));
+    setStagedFiles(failedFiles);
   }
 
   async function pick() {
-    if (pathInvalid) return;
     if (desktop) {
-      const files = await desktop.pickTorrentFiles();
-      if (files.length === 0) return;
-      setBusy(true);
-      await actions.addBase64(files, extra);
-      setBusy(false);
-      closeAdd();
+      const picked = await desktop.pickTorrentFiles();
+      stageFiles(
+        picked.map(
+          (p) => new File([Uint8Array.from(atob(p.data), (c) => c.charCodeAt(0))], p.name),
+        ),
+      );
     } else {
       fileInput.current?.click();
     }
@@ -106,7 +111,7 @@ function AddTorrentForm({ initialText, onDone }: { initialText: string; onDone()
     e.preventDefault();
     e.stopPropagation();
     setDragging(false);
-    void addFiles([...e.dataTransfer.files]);
+    stageFiles([...e.dataTransfer.files]);
   }
 
   return (
@@ -120,7 +125,7 @@ function AddTorrentForm({ initialText, onDone }: { initialText: string; onDone()
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submitLinks();
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit();
           }}
           placeholder={'magnet:?xt=urn:btih:…\nhttps://example.org/file.torrent  (one per line)'}
           className="font-mono text-xs"
@@ -164,12 +169,41 @@ function AddTorrentForm({ initialText, onDone }: { initialText: string; onDone()
           multiple
           hidden
           onChange={(e) => {
-            const files = [...(e.target.files ?? [])];
+            const picked = [...(e.target.files ?? [])];
             e.target.value = '';
-            if (files.length) void addFiles(files);
+            if (picked.length) stageFiles(picked);
           }}
         />
       </div>
+
+      {files.length > 0 && (
+        <ul aria-label="Torrent files to add" className="space-y-1.5">
+          {files.map((f) => (
+            <li
+              key={`${f.name}:${f.size}`}
+              className="flex items-center gap-2 rounded-lg bg-surface-2 py-1.5 pr-1.5 pl-3 text-sm"
+            >
+              <FileText className="size-4 shrink-0 text-muted" />
+              <span className="min-w-0 flex-1 truncate" title={f.name}>
+                {f.name}
+              </span>
+              <span className="shrink-0 text-xs text-muted tabular-nums">
+                {formatBytes(f.size)}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Remove ${f.name}`}
+                disabled={busy}
+                onClick={() => unstageFile(f)}
+                className="shrink-0"
+              >
+                <X className="size-3.5" />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
 
       <div>
         <label
@@ -248,13 +282,9 @@ function AddTorrentForm({ initialText, onDone }: { initialText: string; onDone()
         <Button variant="ghost" onClick={closeAdd}>
           Cancel
         </Button>
-        <Button
-          variant="primary"
-          onClick={() => void submitLinks()}
-          disabled={busy || links.length === 0 || invalid.length > 0 || pathInvalid}
-        >
+        <Button variant="primary" onClick={() => void submit()} disabled={!canSubmit}>
           {busy && <Loader2 className="animate-spin" />}
-          Add {links.length > 1 ? `${links.length} torrents` : 'torrent'}
+          Add {total > 1 ? `${total} torrents` : 'torrent'}
         </Button>
       </div>
     </div>

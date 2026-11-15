@@ -139,6 +139,40 @@ test('adds a torrent into a folder chosen with the server folder browser', async
   await request.delete(`/api/torrents/${torrents[0]!.id}`);
 });
 
+test('picked .torrent files wait in the dialog until Add is clicked', async ({ page, request }) => {
+  // Smallest valid single-file torrent: one 10-byte file, one piece.
+  const name = 'DraxMax E2E File';
+  const info = `d6:lengthi10e4:name${name.length}:${name}12:piece lengthi16384e6:pieces20:${'a'.repeat(20)}e`;
+  const torrent = { name: 'fixture.torrent', mimeType: 'application/x-bittorrent' };
+  const buffer = Buffer.from(`d4:info${info}e`);
+
+  await page.goto('/downloads');
+  await page.getByRole('button', { name: 'Add your first torrent' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add torrents' });
+  const input = dialog.locator('input[type=file]');
+  await input.setInputFiles({ ...torrent, buffer });
+  const staged = dialog.getByRole('list', { name: 'Torrent files to add' });
+  await expect(staged.getByText('fixture.torrent')).toBeVisible();
+  // Picking the same file again doesn't list it twice; removing it empties the list.
+  await input.setInputFiles({ ...torrent, buffer });
+  await expect(staged.getByRole('listitem')).toHaveCount(1);
+  await dialog.getByRole('button', { name: 'Remove fixture.torrent' }).click();
+  await expect(staged).toBeHidden();
+  await expect(dialog.getByRole('button', { name: 'Add torrent' })).toBeDisabled();
+
+  await input.setInputFiles({ ...torrent, buffer });
+  await dialog.getByRole('textbox').first().fill(MAGNET);
+  expect(await (await request.get('/api/torrents')).json()).toEqual([]);
+  await dialog.getByRole('button', { name: 'Add 2 torrents' }).click();
+  await expect(dialog).toBeHidden();
+  const list = page.getByRole('list', { name: 'Torrents' });
+  await expect(list.getByRole('listitem').filter({ hasText: name })).toBeVisible();
+  await expect(torrentRow(page)).toBeVisible();
+  const torrents = (await (await request.get('/api/torrents')).json()) as { id: string }[];
+  expect(torrents).toHaveLength(2);
+  for (const t of torrents) await request.delete(`/api/torrents/${t.id}`);
+});
+
 test('RSS rule editor validates and saves rules', async ({ page }) => {
   await page.goto('/rss');
   await page.getByRole('tab', { name: 'Download rules' }).click();
