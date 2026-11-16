@@ -149,7 +149,7 @@ export function TorrentRow({ torrent: t, selected, targets, onClick, onToggle, o
         onDoubleClick={() => onOpen(t)}
         aria-selected={selected}
         className={cn(
-          'group grid cursor-default grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-2 rounded-2xl px-3 py-3 transition-colors lg:grid-cols-[auto_minmax(0,1fr)_7rem_7rem_5rem_auto]',
+          'group grid cursor-default grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-2 rounded-2xl px-3 py-3 transition-colors lg:grid-cols-[auto_minmax(0,1fr)_9.5rem_7rem_5rem_auto]',
           selected ? 'bg-accent/10 ring-1 ring-accent/30' : 'hover:bg-surface-hover',
         )}
       >
@@ -178,7 +178,8 @@ export function TorrentRow({ torrent: t, selected, targets, onClick, onToggle, o
               <span className="truncate text-danger">{t.error}</span>
             )}
             <span className="lg:hidden">
-              ↓ {formatSpeed(t.downloadSpeed)} · ↑ {formatSpeed(t.uploadSpeed)}
+              ↓ <Speed value={t.downloadSpeed} limit={t.downloadLimit} /> · ↑{' '}
+              <Speed value={t.uploadSpeed} limit={t.uploadLimit} />
             </span>
             {seedLeft !== null && (
               <span className="lg:hidden">seeds {formatEta(seedLeft)} more</span>
@@ -188,12 +189,12 @@ export function TorrentRow({ torrent: t, selected, targets, onClick, onToggle, o
         </div>
         <div className="hidden text-xs tabular lg:block">
           <div className="flex items-center gap-1.5 text-fg">
-            <ArrowDown className="size-3.5 text-accent" />
-            {formatSpeed(t.downloadSpeed)}
+            <ArrowDown className="size-3.5 shrink-0 text-accent" />
+            <Speed value={t.downloadSpeed} limit={t.downloadLimit} />
           </div>
           <div className="mt-1 flex items-center gap-1.5 text-muted">
-            <ArrowUp className="size-3.5 text-success" />
-            {formatSpeed(t.uploadSpeed)}
+            <ArrowUp className="size-3.5 shrink-0 text-success" />
+            <Speed value={t.uploadSpeed} limit={t.uploadLimit} />
           </div>
         </div>
         <div className="hidden text-xs tabular lg:block">
@@ -217,6 +218,23 @@ export function TorrentRow({ torrent: t, selected, targets, onClick, onToggle, o
         </div>
       </motion.li>
     </ContextMenu>
+  );
+}
+
+/** A current speed, followed by the torrent's own limit when it has one. */
+function Speed({ value, limit }: { value: number; limit: number }) {
+  return (
+    <span>
+      <span className="whitespace-nowrap">{formatSpeed(value)}</span>
+      {limit > 0 && (
+        <>
+          {' '}
+          <span className="whitespace-nowrap text-muted" title="Speed limit for this torrent">
+            / {formatSpeed(limit)}
+          </span>
+        </>
+      )}
+    </span>
   );
 }
 
@@ -259,11 +277,15 @@ export function TorrentCard({ torrent: t, selected, targets, onClick, onToggle, 
         <div className="grid grid-cols-3 gap-2 text-xs tabular">
           <div>
             <div className="text-muted">Down</div>
-            <div className="text-fg">{formatSpeed(t.downloadSpeed)}</div>
+            <div className="text-fg">
+              <Speed value={t.downloadSpeed} limit={t.downloadLimit} />
+            </div>
           </div>
           <div>
             <div className="text-muted">Up</div>
-            <div className="text-fg">{formatSpeed(t.uploadSpeed)}</div>
+            <div className="text-fg">
+              <Speed value={t.uploadSpeed} limit={t.uploadLimit} />
+            </div>
           </div>
           <div>
             <div className="text-muted">{t.status === 'downloading' ? 'ETA' : 'Size'}</div>

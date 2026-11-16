@@ -88,6 +88,7 @@ test('add, pause, resume and remove a magnet; navigate every page', async ({ pag
   await limits.getByRole('spinbutton', { name: 'Upload limit' }).fill('100');
   await limits.getByRole('button', { name: 'Apply' }).click();
   await expect(limits).toBeHidden();
+  await expect(row.getByTitle('Speed limit for this torrent').first()).toHaveText('/ 500 KB/s');
 
   // The details panel shows them after a reload and opens the same dialog.
   await page.reload();
@@ -105,6 +106,7 @@ test('add, pause, resume and remove a magnet; navigate every page', async ({ pag
   await expect(limitsButton).toHaveAccessibleName(
     'Speed limits: download Unlimited, upload Unlimited',
   );
+  await expect(row.getByTitle('Speed limit for this torrent')).toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(sheet).toBeHidden();
 
