@@ -47,9 +47,12 @@ export async function torrentRoutes(app: FastifyInstance, { core }: { core: Core
     try {
       // The signed-in user typed this link, so it may point at the LAN (e.g. Prowlarr), as the
       // qBittorrent API's `urls` field can. fetchBytes still checks every redirect hop.
+      // A link on a configured site (private tracker) carries that site's cookies/headers, as
+      // RSS and Missing downloads do; without them such sites answer 401. fetchBytes only sends
+      // them to the link's own host, never across a redirect to another host.
       ({ body: data } = await fetchBytes(body.url, {
         maxBytes: 16 * 1024 * 1024,
-        headers: { accept: 'application/x-bittorrent, */*' },
+        headers: { accept: 'application/x-bittorrent, */*', ...core.sites.headersFor(body.url) },
       }));
     } catch (err) {
       if (err instanceof MagnetRedirectError)

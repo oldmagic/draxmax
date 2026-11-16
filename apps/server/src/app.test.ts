@@ -140,6 +140,47 @@ describe('REST API', () => {
     }
   });
 
+  it("sends a configured site's cookies when adding one of its links", async () => {
+    const torrent = Buffer.from(makeTorrentFile('Private', [{ path: ['p.bin'], length: 10 }]));
+    const web = createServer((req, res) => {
+      if (req.headers.cookie === 'sbid=SESSION' && req.headers['x-api-key'] === 'KEY') {
+        res.writeHead(200, { 'content-type': 'application/x-bittorrent' }).end(torrent);
+      } else res.writeHead(401).end();
+    });
+    await new Promise<void>((r) => web.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${(web.address() as AddressInfo).port}`;
+    const add = () =>
+      app.inject({
+        method: 'POST',
+        url: '/api/torrents/url',
+        payload: { url: `${base}/download.php?id=1`, paused: true },
+      });
+    try {
+      const before = await add();
+      expect(before.statusCode).toBe(400);
+      expect(before.json<{ error: string }>().error).toContain('HTTP 401');
+      const site = await app.inject({
+        method: 'POST',
+        url: '/api/sites',
+        payload: {
+          name: 'Private',
+          baseUrls: [`${base}/`],
+          searchUrls: ['/search?q={query}'],
+          infoUrl: '/t/{id}',
+          downloadUrl: '/download.php?id={id}',
+          cookies: 'sbid=SESSION',
+          headers: 'X-Api-Key: KEY',
+        },
+      });
+      expect(site.statusCode).toBe(201);
+      const after = await add();
+      expect(after.statusCode).toBe(201);
+      expect(after.json<TorrentDTO>().name).toBe('Private');
+    } finally {
+      await new Promise((r) => web.close(r));
+    }
+  });
+
   it('maps validation, not-found and conflict errors to status codes', async () => {
     const bad = await app.inject({
       method: 'POST',
