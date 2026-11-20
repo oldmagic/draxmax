@@ -3,7 +3,7 @@
 # ---- Build: install, build Web UI + server bundle, prune to production deps ----
 # Base images are pinned by digest so a rebuild can't silently pick up a different image;
 # Dependabot proposes the updates (.github/dependabot.yml).
-FROM node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0 AS build
+FROM node:24-bookworm@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496 AS build
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH CI=true
 RUN corepack enable
 WORKDIR /src
@@ -32,7 +32,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
  && cp -r apps/web/dist /out/web
 
 # ---- Runtime ----
-FROM node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
 # Pick up Debian security fixes released since the base image was built.
 RUN apt-get update \
  && apt-get -y upgrade --no-install-recommends \
